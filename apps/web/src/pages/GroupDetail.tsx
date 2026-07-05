@@ -345,10 +345,10 @@ export default function GroupDetail() {
 
   const peerName = (b: BalanceSummary) => b.peer_display_name ?? b.peer_email.split('@')[0];
 
-  const totalSpend = receipts.reduce((sum, r) => sum + (r.total ?? 0), 0);
-  const myReceiptsTotal = receipts.filter((r) => r.owner_id === me?.id).reduce((sum, r) => sum + (r.total ?? 0), 0);
   const totalTheyOwe = balances.reduce((sum, b) => sum + b.they_owe, 0);
   const totalIOwe = balances.reduce((sum, b) => sum + b.you_owe, 0);
+  const net = totalTheyOwe - totalIOwe;
+  const myReceiptsTotal = receipts.filter((r) => r.owner_id === me?.id).reduce((sum, r) => sum + (r.total ?? 0), 0);
   const mySpend = Math.max(0, myReceiptsTotal - totalTheyOwe + totalIOwe);
 
   return (
@@ -385,18 +385,22 @@ export default function GroupDetail() {
         <div className="card">
           <div className="grid grid-cols-2 divide-x divide-gray-100">
             <div className="pr-4">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Total</p>
-              {receiptsLoading
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Net</p>
+              {balancesLoading
                 ? <Skeleton className="h-7 w-24 mt-1" />
-                : <p className="text-2xl font-bold text-gray-900">{formatMoney(totalSpend)}</p>}
-              <p className="text-xs text-gray-400 mt-0.5">{receipts.length} receipt{receipts.length !== 1 ? 's' : ''}</p>
+                : <p className={`text-2xl font-bold ${net > 0 ? 'text-green-600' : net < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                    {net > 0 ? '+' : ''}{formatMoney(net)}
+                  </p>}
+              <p className="text-xs text-gray-400 mt-0.5">
+                {net > 0 ? "you're owed" : net < 0 ? 'you owe' : 'all settled'}
+              </p>
             </div>
             <div className="pl-4">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">My Spend</p>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Your Spend</p>
               {receiptsLoading || balancesLoading
                 ? <Skeleton className="h-7 w-24 mt-1" />
                 : <p className="text-2xl font-bold text-gray-900">{formatMoney(mySpend)}</p>}
-              <p className="text-xs text-gray-400 mt-0.5">your share</p>
+              <p className="text-xs text-gray-400 mt-0.5">your share of trip</p>
             </div>
           </div>
         </div>

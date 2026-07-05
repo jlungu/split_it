@@ -199,6 +199,8 @@ export default function ReceiptDetail() {
   const [groupMode, setGroupMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  useEffect(() => { window.scrollTo(0, 0); }, []);
+
   useEffect(() => {
     if (!id) return;
     listGroups().then(({ groups: g }) => setAvailableGroups(g)).catch(() => {});
