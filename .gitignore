@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+apps/web/dist/
+apps/api/dist/
+
+# Environment files (never commit real secrets)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Supabase local config
+supabase/settings.local.json
+
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

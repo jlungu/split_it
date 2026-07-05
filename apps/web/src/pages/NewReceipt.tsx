@@ -1,0 +1,561 @@
+import React, { useRef, useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { ocr, resolvePersonInput, searchUsers, getMe, createReceipt as apiCreateReceipt } from '../lib/api';
+import { useContactsStore } from '../store/contacts';
+import type { OcrLineItem, User } from '@split-it/types';
+
+function fmtPrice(n: number): string {
+  return (n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+const DEL_SNAP = 80;
+const DEL_THRESHOLD = 40;
+
+function DeleteSwipeRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  const slideRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const currentTx = useRef(-DEL_SNAP);
+  const gestureBase = useRef(-DEL_SNAP);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const dirLocked = useRef<'h' | 'v' | null>(null);
+  const isDragging = useRef(false);
+
+  function applyTransform(tx: number, animate: boolean) {
+    const el = slideRef.current;
+    if (!el) return;
+    el.style.transition = animate ? 'transform 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94)' : 'none';
+    el.style.transform = `translateX(${tx}px)`;
+    currentTx.current = tx;
+  }
+
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    function onStart(e: TouchEvent) {
+      startX.current = e.touches[0].clientX;
+      startY.current = e.touches[0].clientY;
+      gestureBase.current = currentTx.current;
+      dirLocked.current = null;
+      isDragging.current = false;
+    }
+    function onMove(e: TouchEvent) {
+      const dx = e.touches[0].clientX - startX.current;
+      const dy = e.touches[0].clientY - startY.current;
+      if (!dirLocked.current) {
+        if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+        dirLocked.current = Math.abs(dx) >= Math.abs(dy) ? 'h' : 'v';
+        isDragging.current = dirLocked.current === 'h';
+        if (!isDragging.current) return;
+      }
+      if (!isDragging.current) return;
+      e.preventDefault();
+      applyTransform(Math.min(Math.max(-DEL_SNAP, gestureBase.current + dx), 20), false);
+    }
+    function onEnd() {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      const open = currentTx.current > -(DEL_SNAP - DEL_THRESHOLD);
+      applyTransform(open ? 0 : -DEL_SNAP, true);
+    }
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onEnd, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', onEnd);
+    };
+  }, []);
+
+  return (
+    <div className="overflow-hidden rounded-2xl shadow-sm border border-gray-100">
+      <div
+        ref={slideRef}
+        className="flex"
+        style={{ width: `calc(100% + ${DEL_SNAP}px)`, transform: `translateX(-${DEL_SNAP}px)` }}
+      >
+        <div className="flex-shrink-0 flex items-center justify-center bg-red-500" style={{ width: DEL_SNAP }}>
+          <button
+            onClick={() => { applyTransform(-DEL_SNAP, true); onDelete(); }}
+            className="w-full h-full text-white font-semibold text-xs flex flex-col items-center justify-center gap-0.5"
+          >
+            <span className="text-lg leading-none">×</span>
+            <span>Remove</span>
+          </button>
+        </div>
+        <div ref={contentRef} className="flex-1 min-w-0 bg-white p-4">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PriceInput({ value, className, onChange }: { value: number; className?: string; onChange: (v: number) => void }) {
+  const [text, setText] = useState(fmtPrice(value ?? 0));
+  useEffect(() => { setText(fmtPrice(value ?? 0)); }, [value]);
+  return (
+    <div className="relative">
+      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">$</span>
+      <input
+        className={`${className} pl-6`}
+        type="text"
+        inputMode="decimal"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          const parsed = parseFloat(text.replace(/,/g, '')) || 0;
+          onChange(parsed);
+          setText(fmtPrice(parsed));
+        }}
+      />
+    </div>
+  );
+}
+
+type EditableItem = OcrLineItem & { id: string; assignments: { user: User; fraction: number }[] };
+
+function newId() { return Math.random().toString(36).slice(2); }
+
+function toBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+export default function NewReceipt() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const libraryRef = useRef<HTMLInputElement>(null);
+
+  const [step, setStep] = useState<'capture' | 'edit' | 'assign' | 'summary'>('capture');
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrError, setOcrError] = useState('');
+  const [meta, setMeta] = useState<{ restaurant_name: string | null; date: string | null; tax: number | null; tip: number | null; total: number | null }>({
+    restaurant_name: null, date: null, tax: null, tip: null, total: null,
+  });
+  const [items, setItems] = useState<EditableItem[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  // For adding people
+  const { add: addContact } = useContactsStore();
+  const [emailInput, setEmailInput] = useState('');
+  const [suggestions, setSuggestions] = useState<User[]>([]);
+  const [people, setPeople] = useState<User[]>([]);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [me, setMe] = useState<User | null>(null);
+
+  useEffect(() => {
+    getMe().then(({ user }) => { setMe(user); setPeople([user]); }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const file = (location.state as { file?: File } | null)?.file;
+    if (file) handleImageFile(file);
+  }, []);
+
+  async function handleImageFile(file: File) {
+    setOcrError('');
+    setOcrLoading(true);
+    try {
+      const imageBase64 = await toBase64(file);
+      const mimeType = (file.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+      const result = await ocr({ imageBase64, mimeType });
+      setMeta({ restaurant_name: result.restaurant_name, date: result.date ?? null, tax: result.tax, tip: result.tip, total: result.total });
+      setItems((result.line_items ?? []).map((li) => ({
+        ...li,
+        unit_price: li.unit_price ?? 0,
+        total_price: li.total_price ?? 0,
+        quantity: li.quantity ?? 1,
+        id: newId(),
+        assignments: [],
+      })));
+      setStep('edit');
+    } catch (err) {
+      setOcrError(err instanceof Error ? err.message : 'OCR failed');
+    } finally {
+      setOcrLoading(false);
+    }
+  }
+
+  function updateItem(id: string, patch: Partial<EditableItem>) {
+    setItems((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function addItem() {
+    setItems((prev) => [...prev, { id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
+  }
+
+  function removeItem(id: string) {
+    setItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  useEffect(() => {
+    const val = emailInput.trim();
+    if (val.length < 1) { setSuggestions([]); return; }
+    const timer = setTimeout(() => {
+      searchUsers(val)
+        .then(({ users }) => setSuggestions(users.filter((u) => !people.find((p) => p.id === u.id))))
+        .catch(() => {});
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [emailInput, people]);
+
+  function pickSuggestion(user: User) {
+    if (!people.find((p) => p.id === user.id)) {
+      setPeople((prev) => [...prev, user]);
+      addContact(user);
+    }
+    setEmailInput('');
+    setSuggestions([]);
+  }
+
+  async function addPerson() {
+    const val = emailInput.trim();
+    if (!val) return;
+    setEmailLoading(true);
+    setSuggestions([]);
+    try {
+      const user = await resolvePersonInput(val);
+      if (!people.find((p) => p.id === user.id)) {
+        setPeople((prev) => [...prev, user]);
+        addContact(user);
+      }
+      setEmailInput('');
+    } finally {
+      setEmailLoading(false);
+    }
+  }
+
+  function toggleAssignment(itemId: string, user: User) {
+    setItems((prev) => prev.map((item) => {
+      if (item.id !== itemId) return item;
+      const exists = item.assignments.find((a) => a.user.id === user.id);
+      const newAssignments = exists
+        ? item.assignments.filter((a) => a.user.id !== user.id)
+        : [...item.assignments, { user, fraction: 0 }];
+      // Rebalance to equal fractions
+      const n = newAssignments.length;
+      return { ...item, assignments: newAssignments.map((a) => ({ ...a, fraction: n > 0 ? 1 / n : 0 })) };
+    }));
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const subtotal = items.reduce((s, i) => s + i.total_price, 0);
+      const payload = {
+        restaurant_name: meta.restaurant_name,
+        date: meta.date ?? undefined,
+        tax: meta.tax,
+        tip: meta.tip,
+        total: meta.total ?? subtotal + (meta.tax ?? 0) + (meta.tip ?? 0),
+        subtotal,
+        line_items: items.map((item, idx) => ({
+          description: item.description,
+          unit_price: item.unit_price,
+          quantity: item.quantity,
+          total_price: item.total_price,
+          position: idx,
+          assignments: item.assignments.map((a) => ({ user_id: a.user.id, fraction: a.fraction })),
+        })),
+      };
+      const { receipt } = await apiCreateReceipt(payload);
+      navigate(`/receipts/${receipt.id}`, { replace: true });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 pb-24">
+      <div className="sticky top-0 z-10 bg-white border-b border-gray-100 px-4 py-4 flex items-center gap-3">
+        <button onClick={() => navigate(-1)} className="text-gray-500 text-sm">← Back</button>
+        <h1 className="font-semibold">New Receipt</h1>
+      </div>
+
+      {/* Step: Capture */}
+      {step === 'capture' && (
+        <div className="px-6 pt-12 flex flex-col items-center gap-6">
+          {ocrLoading ? (
+            <div className="text-center">
+              <div className="text-4xl mb-4">🔍</div>
+              <p className="text-gray-600 font-medium">Reading receipt…</p>
+              <p className="text-gray-400 text-sm mt-1">This takes a few seconds</p>
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={() => cameraRef.current?.click()}
+                className="w-full h-48 border-2 border-dashed border-brand-300 rounded-2xl flex flex-col
+                  items-center justify-center gap-3 text-brand-500 bg-brand-50 active:bg-brand-100 transition"
+              >
+                <span className="text-4xl">📷</span>
+                <span className="font-medium">Take a photo</span>
+              </button>
+              <input
+                ref={cameraRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(e) => { if (e.target.files?.[0]) handleImageFile(e.target.files[0]); }}
+              />
+              <button
+                onClick={() => libraryRef.current?.click()}
+                className="btn-secondary"
+              >
+                Upload from library
+              </button>
+              <input
+                ref={libraryRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => { if (e.target.files?.[0]) handleImageFile(e.target.files[0]); }}
+              />
+              {ocrError && <p className="text-red-500 text-sm text-center">{ocrError}</p>}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Step: Edit line items */}
+      {step === 'edit' && (
+        <div className="px-4 pt-4 space-y-4">
+          <div className="card space-y-3">
+            <div>
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Restaurant</label>
+              <input
+                className="input mt-1"
+                value={meta.restaurant_name ?? ''}
+                onChange={(e) => setMeta({ ...meta, restaurant_name: e.target.value || null })}
+                placeholder="Restaurant name"
+              />
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Subtotal</label>
+                <div className="input mt-1 bg-gray-50 text-gray-500">
+                  ${fmtPrice(items.reduce((s, i) => s + i.total_price, 0))}
+                </div>
+              </div>
+              <div className="flex-1">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tax</label>
+                <PriceInput
+                  className="input mt-1"
+                  value={meta.tax ?? 0}
+                  onChange={(v) => setMeta({ ...meta, tax: v || null })}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tip</label>
+                <PriceInput
+                  className="input mt-1"
+                  value={meta.tip ?? 0}
+                  onChange={(v) => setMeta({ ...meta, tip: v || null })}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total</label>
+              <PriceInput
+                className="input mt-1"
+                value={meta.total ?? 0}
+                onChange={(v) => setMeta({ ...meta, total: v || null })}
+              />
+            </div>
+          </div>
+
+          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide px-1">Items</h2>
+
+          {items.map((item) => (
+            <DeleteSwipeRow key={item.id} onDelete={() => removeItem(item.id)}>
+              <div className="space-y-2">
+                <input
+                  className="input w-full"
+                  value={item.description}
+                  onChange={(e) => updateItem(item.id, { description: e.target.value })}
+                  placeholder="Item description"
+                />
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Qty</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min="1"
+                      value={item.quantity}
+                      onChange={(e) => {
+                        const q = +e.target.value;
+                        updateItem(item.id, { quantity: q, total_price: +(q * item.unit_price).toFixed(2) });
+                      }}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Unit</label>
+                    <PriceInput
+                      className="input"
+                      value={item.unit_price}
+                      onChange={(up) => updateItem(item.id, { unit_price: up, total_price: +(item.quantity * up).toFixed(2) })}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total</label>
+                    <PriceInput
+                      className="input"
+                      value={item.total_price}
+                      onChange={(tp) => updateItem(item.id, { total_price: tp })}
+                    />
+                  </div>
+                </div>
+              </div>
+            </DeleteSwipeRow>
+          ))}
+
+          <button onClick={addItem} className="btn-secondary">+ Add item</button>
+          <button onClick={() => setStep('assign')} className="btn-primary">Next: Assign people →</button>
+        </div>
+      )}
+
+      {/* Step: Assign people */}
+      {step === 'assign' && (
+        <div className="px-4 pt-4 space-y-4">
+          <div className="card">
+            <p className="text-sm font-medium text-gray-700 mb-2">Add people by email</p>
+            <div className="relative">
+              <div className="flex gap-2">
+                <input
+                  className="input flex-1"
+                  type="text"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addPerson()}
+                  placeholder="Name or email"
+                />
+                <button onClick={addPerson} disabled={emailLoading} className="px-4 py-2 bg-brand-600 text-white rounded-xl text-sm font-medium disabled:opacity-50">
+                  {emailLoading ? '…' : 'Add'}
+                </button>
+              </div>
+              {suggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-lg border border-gray-100 z-10 overflow-hidden">
+                  {suggestions.map((u) => (
+                    <button
+                      key={u.id}
+                      onMouseDown={(e) => { e.preventDefault(); pickSuggestion(u); }}
+                      className="w-full text-left px-4 py-2.5 hover:bg-brand-50 transition-colors"
+                    >
+                      <p className="text-sm font-medium">{u.display_name ?? u.email}</p>
+                      {u.display_name && <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{u.email}</p>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {people.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {people.map((p) => {
+                  const isMe = me?.id === p.id;
+                  return (
+                    <span key={p.id} className="bg-brand-100 text-brand-700 text-xs font-medium px-3 py-1 rounded-full flex items-center gap-1">
+                      {isMe ? 'Me' : (p.display_name ?? p.email)}
+                      {!isMe && (
+                        <button onClick={() => setPeople((prev) => prev.filter((u) => u.id !== p.id))} className="text-brand-400 ml-1">×</button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide px-1">Tap to assign</h2>
+
+          {items.map((item) => (
+            <div key={item.id} className="card">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium">{item.description || '(no name)'}</span>
+                <span className="text-sm text-gray-500">${item.total_price.toFixed(2)}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {people.length > 1 && (() => {
+                  const allAssigned = people.every((p) => item.assignments.some((a) => a.user.id === p.id));
+                  return (
+                    <button
+                      onClick={() => {
+                        if (allAssigned) {
+                          setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, assignments: [] } : i));
+                        } else {
+                          const n = people.length;
+                          setItems((prev) => prev.map((i) => i.id === item.id
+                            ? { ...i, assignments: people.map((p) => ({ user: p, fraction: 1 / n })) }
+                            : i
+                          ));
+                        }
+                      }}
+                      className={`text-xs px-3 py-1.5 rounded-full font-medium border transition ${
+                        allAssigned
+                          ? 'bg-brand-600 text-white border-brand-600'
+                          : 'bg-white text-gray-600 border-gray-200'
+                      }`}
+                    >
+                      All
+                    </button>
+                  );
+                })()}
+                {people.map((p) => {
+                  const assigned = item.assignments.some((a) => a.user.id === p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => toggleAssignment(item.id, p)}
+                      className={`text-xs px-3 py-1.5 rounded-full font-medium border transition ${
+                        assigned
+                          ? 'bg-brand-600 text-white border-brand-600'
+                          : 'bg-white text-gray-600 border-gray-200'
+                      }`}
+                    >
+                      {me?.id === p.id ? 'Me' : (p.display_name ?? p.email.split('@')[0])}
+                    </button>
+                  );
+                })}
+                {people.length === 0 && <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Add people above first</p>}
+              </div>
+              {item.assignments.length > 1 && (
+                <p className="text-xs text-gray-400 mt-2">Split equally between {item.assignments.length}</p>
+              )}
+            </div>
+          ))}
+
+          <div className="flex gap-3">
+            {(() => {
+              const unassigned = people.filter((p) =>
+                !items.some((item) => item.assignments.some((a) => a.user.id === p.id))
+              );
+              return (
+                <>
+                  {unassigned.length > 0 && (
+                    <p className="text-xs text-amber-600 text-center">
+                      Not assigned to any item: {unassigned.map((p) => me?.id === p.id ? 'Me' : (p.display_name ?? p.email.split('@')[0])).join(', ')}
+                    </p>
+                  )}
+                  <div className="flex gap-3">
+                    <button onClick={() => setStep('edit')} className="btn-secondary flex-1">← Back</button>
+                    <button onClick={save} disabled={saving || unassigned.length > 0} className="btn-primary flex-1">
+                      {saving ? 'Saving…' : 'Save receipt'}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
