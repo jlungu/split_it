@@ -278,25 +278,51 @@ export default function Home() {
 
   const totalOwed = balances.reduce((s, b) => s + b.they_owe, 0);
   const totalOwing = balances.reduce((s, b) => s + b.you_owe, 0);
+  const net = totalOwed - totalOwing;
+  const totalFlow = totalOwed + totalOwing;
+  const owedPct = totalFlow > 0 ? (totalOwed / totalFlow) * 100 : 50;
   const peerName = (b: BalanceSummary) => me?.id === b.peer_user_id ? 'Me' : (b.peer_display_name ?? b.peer_email.split('@')[0]);
 
   return (
     <div className="min-h-screen bg-gray-50 pb-28">
-      {/* Header */}
-      <div className="bg-brand-600 text-white px-6 pt-14 pb-8">
-        <div className="flex gap-4 mt-2">
-          <div className="flex-1 bg-white/10 rounded-2xl p-4">
-            <p className="text-white/70 text-xs mb-1">You're owed</p>
-            <p className="text-2xl font-bold">{formatMoney(totalOwed)}</p>
-          </div>
-          <div className="flex-1 bg-white/10 rounded-2xl p-4">
-            <p className="text-white/70 text-xs mb-1">You owe</p>
-            <p className="text-2xl font-bold">{formatMoney(totalOwing)}</p>
-          </div>
-        </div>
+      {/* Top bar */}
+      <div className="bg-white shadow-sm flex items-center justify-between px-6 pb-3" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' }}>
+        <span className="text-lg font-bold text-gray-900 tracking-tight">Split It</span>
+        <Link to="/profile" className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 text-sm font-semibold">
+          {(me?.display_name?.[0] ?? me?.email?.[0] ?? '?').toUpperCase()}
+        </Link>
       </div>
 
       <div className="px-4 pt-6 space-y-6">
+        {/* Summary card */}
+        <div className="card">
+          <div className="flex gap-4 mb-4">
+            <div className="flex-1">
+              <p className="text-xs font-semibold text-green-700 uppercase tracking-widest mb-1">You're owed</p>
+              {balancesLoading ? <Skeleton className="h-8 w-24 mt-1" /> : <p className="text-2xl font-bold text-green-600">{formatMoney(totalOwed)}</p>}
+            </div>
+            <div className="w-px bg-gray-100 self-stretch" />
+            <div className="flex-1">
+              <p className="text-xs font-semibold text-red-600 uppercase tracking-widest mb-1">You owe</p>
+              {balancesLoading ? <Skeleton className="h-8 w-20 mt-1" /> : <p className="text-2xl font-bold text-red-500">{formatMoney(totalOwing)}</p>}
+            </div>
+          </div>
+          <div className="h-1.5 rounded-full overflow-hidden bg-gray-100 flex">
+            {balancesLoading ? (
+              <div className="bg-gray-200 w-full rounded-full animate-pulse" />
+            ) : totalFlow > 0 ? (
+              <>
+                <div className="bg-green-600 rounded-l-full transition-all duration-500" style={{ width: `${owedPct}%` }} />
+                <div className="bg-red-500 flex-1 rounded-r-full transition-all duration-500" />
+              </>
+            ) : (
+              <div className="bg-gray-200 w-full rounded-full" />
+            )}
+          </div>
+          <p className={`text-xs font-medium mt-1.5 text-center ${net > 0 ? 'text-green-600' : net < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+            {balancesLoading ? <Skeleton className="h-3 w-20 mx-auto" /> : totalFlow === 0 ? 'All settled up' : net > 0 ? `Net +${formatMoney(net)}` : `Net ${formatMoney(net)}`}
+          </p>
+        </div>
         {error && (
           <div className="card bg-red-50 border-red-100 text-red-700 text-sm">
             <p className="font-medium">Error loading data</p>
