@@ -7,8 +7,14 @@ import type {
   ReceiptWithDetails,
   SplitCalculation,
   BalanceSummary,
+  BreakdownRow,
   Settlement,
+  Group,
+  GroupMember,
+  GroupSummary,
 } from '@split-it/types';
+
+export type { BreakdownRow, Group, GroupMember, GroupSummary };
 
 async function authHeader(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
@@ -85,14 +91,43 @@ export const settle = (body: { receipt_id: string; to_user_id: string; from_user
 export const getBalances = () =>
   request<{ balances: BalanceSummary[] }>('/api/splits/balances');
 
-export interface BreakdownRow {
-  receipt_id: string;
-  restaurant_name: string | null;
-  date: string;
-  amount: number;
-}
-
 export const getBalanceBreakdown = (peerId: string) =>
   request<{ they_owe_me: BreakdownRow[]; i_owe_them: BreakdownRow[] }>(
     `/api/splits/breakdown/${peerId}`
   );
+
+// Groups
+export const listGroups = () =>
+  request<{ groups: GroupSummary[] }>('/api/groups');
+
+export const createGroup = (name: string) =>
+  request<{ group: Group }>('/api/groups', { method: 'POST', body: JSON.stringify({ name }) });
+
+export const getGroup = (id: string) =>
+  request<{ group: Group; members: GroupMember[] }>(`/api/groups/${id}`);
+
+export const renameGroup = (groupId: string, name: string) =>
+  request<{ group: Group }>(`/api/groups/${groupId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+
+export const addGroupMember = (groupId: string, userId: string) =>
+  request<void>(`/api/groups/${groupId}/members`, { method: 'POST', body: JSON.stringify({ user_id: userId }) });
+
+export const removeGroupMember = (groupId: string, userId: string) =>
+  request<void>(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' });
+
+export const listGroupReceipts = (groupId: string) =>
+  request<{ receipts: Receipt[] }>(`/api/groups/${groupId}/receipts`);
+
+export const getGroupBalances = (groupId: string) =>
+  request<{ balances: BalanceSummary[] }>(`/api/groups/${groupId}/balances`);
+
+export const getGroupBreakdown = (groupId: string, peerId: string) =>
+  request<{ they_owe_me: BreakdownRow[]; i_owe_them: BreakdownRow[] }>(
+    `/api/groups/${groupId}/breakdown/${peerId}`
+  );
+
+export const assignReceiptToGroup = (receiptId: string, groupId: string | null) =>
+  request<{ receipt: Receipt }>(`/api/receipts/${receiptId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ group_id: groupId }),
+  });

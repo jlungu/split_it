@@ -18,6 +18,7 @@ export interface Receipt {
   tax: number | null;
   tip: number | null;
   total: number | null;
+  group_id?: string | null;
   created_at?: string;
 }
 
@@ -91,6 +92,37 @@ export interface BalanceSummary {
   net_amount: number; // positive = they owe you, negative = you owe them
   you_owe: number;    // always >= 0
   they_owe: number;   // always >= 0
+}
+
+// Per-receipt breakdown row used in balance breakdown responses
+export interface BreakdownRow {
+  receipt_id: string;
+  restaurant_name: string | null;
+  date: string;
+  amount: number;
+}
+
+// Groups
+export interface Group {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at?: string;
+}
+
+export interface GroupMember {
+  id: string;
+  group_id: string;
+  user_id: string;
+  joined_at?: string;
+  user?: Pick<User, 'id' | 'email' | 'display_name'>;
+}
+
+export interface GroupSummary extends Group {
+  member_count: number;
+  you_owe: number;
+  they_owe: number;
+  members: Pick<User, 'id' | 'email' | 'display_name'>[];
 }
 
 // Receipt with all child data for the detail screen

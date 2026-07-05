@@ -85,6 +85,7 @@ router.post('/', async (c) => {
       tax: body.tax ?? null,
       tip: body.tip ?? null,
       total: body.total ?? null,
+      group_id: (body as { group_id?: string | null }).group_id ?? null,
     })
     .select()
     .single();
@@ -133,7 +134,7 @@ router.get('/:id', async (c) => {
 
   const { data: receipt, error: re } = await supabase
     .from('receipts')
-    .select('id, owner_id, restaurant_name, date, subtotal, tax, tip, total, created_at')
+    .select('id, owner_id, restaurant_name, date, subtotal, tax, tip, total, group_id, created_at')
     .eq('id', receiptId)
     .single();
 
@@ -195,6 +196,7 @@ router.put('/:id', async (c) => {
       tax: body.tax,
       tip: body.tip,
       total: body.total,
+      group_id: body.group_id,
     })
     .eq('id', receiptId)
     .eq('owner_id', userId)

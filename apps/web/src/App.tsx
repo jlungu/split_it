@@ -5,6 +5,7 @@ import Home from './pages/Home';
 import NewReceipt from './pages/NewReceipt';
 import ReceiptDetail from './pages/ReceiptDetail';
 import Profile from './pages/Profile';
+import GroupDetail from './pages/GroupDetail';
 import NavBar from './components/NavBar';
 
 const NAV_ROUTES = ['/', '/profile'];
@@ -62,6 +63,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/groups/:id"
+            element={
+              <ProtectedRoute>
+                <GroupDetail />
               </ProtectedRoute>
             }
           />

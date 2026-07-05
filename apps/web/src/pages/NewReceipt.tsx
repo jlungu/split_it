@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ocr, resolvePersonInput, searchUsers, getMe, createReceipt as apiCreateReceipt } from '../lib/api';
+import { ocr, resolvePersonInput, searchUsers, getMe, createReceipt as apiCreateReceipt, listGroups } from '../lib/api';
+import type { GroupSummary } from '@split-it/types';
 import { useContactsStore } from '../store/contacts';
 import type { OcrLineItem, User } from '@split-it/types';
 
@@ -92,6 +93,18 @@ function DeleteSwipeRow({ children, onDelete }: { children: React.ReactNode; onD
   );
 }
 
+function evalExpr(raw: string): number {
+  const s = raw.replace(/,/g, '').trim();
+  if (/^[\d.+\-*/() ]+$/.test(s)) {
+    try {
+      // eslint-disable-next-line no-new-func
+      const result = new Function(`return (${s})`)();
+      if (typeof result === 'number' && isFinite(result) && result >= 0) return +result.toFixed(2);
+    } catch { /* fall through */ }
+  }
+  return parseFloat(s) || 0;
+}
+
 function PriceInput({ value, className, onChange }: { value: number; className?: string; onChange: (v: number) => void }) {
   const [text, setText] = useState(fmtPrice(value ?? 0));
   useEffect(() => { setText(fmtPrice(value ?? 0)); }, [value]);
@@ -105,7 +118,7 @@ function PriceInput({ value, className, onChange }: { value: number; className?:
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
-          const parsed = parseFloat(text.replace(/,/g, '')) || 0;
+          const parsed = evalExpr(text);
           onChange(parsed);
           setText(fmtPrice(parsed));
         }}
@@ -141,6 +154,8 @@ export default function NewReceipt() {
   });
   const [items, setItems] = useState<EditableItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   // For adding people
   const { add: addContact } = useContactsStore();
@@ -152,6 +167,7 @@ export default function NewReceipt() {
 
   useEffect(() => {
     getMe().then(({ user }) => { setMe(user); setPeople([user]); }).catch(() => {});
+    listGroups().then(({ groups: g }) => setGroups(g)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -264,6 +280,7 @@ export default function NewReceipt() {
           position: idx,
           assignments: item.assignments.map((a) => ({ user_id: a.user.id, fraction: a.fraction })),
         })),
+        group_id: selectedGroupId ?? undefined,
       };
       const { receipt } = await apiCreateReceipt(payload);
       navigate(`/receipts/${receipt.id}`, { replace: true });
@@ -474,6 +491,38 @@ export default function NewReceipt() {
             )}
           </div>
 
+          {groups.length > 0 && (
+            <div className="card space-y-2">
+              <p className="text-sm font-medium text-gray-700">Add to group</p>
+              <select
+                value={selectedGroupId ?? ''}
+                onChange={(e) => {
+                  const gId = e.target.value || null;
+                  setSelectedGroupId(gId);
+                  if (gId) {
+                    const grp = groups.find((g) => g.id === gId);
+                    if (grp) {
+                      setPeople((prev) => {
+                        const existingIds = new Set(prev.map((p) => p.id));
+                        const toAdd = grp.members
+                          .filter((m) => !existingIds.has(m.id))
+                          .map((m) => ({ id: m.id, email: m.email, display_name: m.display_name, is_registered: true } as User));
+                        return [...prev, ...toAdd];
+                      });
+                    }
+                  }
+                }}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300"
+              >
+                <option value="">None</option>
+                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+              {selectedGroupId && (
+                <p className="text-xs text-gray-400">Group members added to people list above.</p>
+              )}
+            </div>
+          )}
+
           <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide px-1">Tap to assign</h2>
 
           {items.map((item) => (
@@ -532,28 +581,16 @@ export default function NewReceipt() {
             </div>
           ))}
 
-          <div className="flex gap-3">
-            {(() => {
-              const unassigned = people.filter((p) =>
-                !items.some((item) => item.assignments.some((a) => a.user.id === p.id))
-              );
-              return (
-                <>
-                  {unassigned.length > 0 && (
-                    <p className="text-xs text-amber-600 text-center">
-                      Not assigned to any item: {unassigned.map((p) => me?.id === p.id ? 'Me' : (p.display_name ?? p.email.split('@')[0])).join(', ')}
-                    </p>
-                  )}
-                  <div className="flex gap-3">
-                    <button onClick={() => setStep('edit')} className="btn-secondary flex-1">← Back</button>
-                    <button onClick={save} disabled={saving || unassigned.length > 0} className="btn-primary flex-1">
-                      {saving ? 'Saving…' : 'Save receipt'}
-                    </button>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
+          {(() => {
+            const unassigned = people.filter((p) => !items.some((item) => item.assignments.some((a) => a.user.id === p.id)));
+            return (
+              <>
+                {unassigned.length > 0 && <p className="text-xs text-amber-600 text-center">Not assigned: {unassigned.map((p) => me?.id === p.id ? 'Me' : (p.display_name ?? p.email.split('@')[0])).join(', ')}</p>}
+                <button onClick={() => setStep('edit')} className="btn-secondary">← Back</button>
+                <button onClick={save} disabled={saving || unassigned.length > 0} className="btn-primary">{saving ? 'Saving…' : 'Save receipt'}</button>
+              </>
+            );
+          })()}
         </div>
       )}
     </div>

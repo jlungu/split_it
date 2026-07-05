@@ -8,6 +8,7 @@ import ocrRoutes from './routes/ocr.js';
 import usersRoutes from './routes/users.js';
 import receiptsRoutes from './routes/receipts.js';
 import splitsRoutes from './routes/splits.js';
+import groupsRoutes from './routes/groups.js';
 
 const app = new Hono();
 
@@ -31,6 +32,7 @@ app.route('/api/ocr', ocrRoutes);
 app.route('/api/users', usersRoutes);
 app.route('/api/receipts', receiptsRoutes);
 app.route('/api/splits', splitsRoutes);
+app.route('/api/groups', groupsRoutes);
 
 app.get('/api/health', (c) => c.json({ ok: true }));
 

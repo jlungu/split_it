@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { calculateSplit, getReceipt, settle, getMe, deleteReceipt } from '../lib/api';
-import type { ReceiptWithDetails, SplitCalculation, User } from '@split-it/types';
+import { calculateSplit, getReceipt, settle, getMe, deleteReceipt, listGroups, assignReceiptToGroup } from '../lib/api';
+import type { GroupSummary, ReceiptWithDetails, SplitCalculation, User } from '@split-it/types';
 
 function formatMoney(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -193,12 +193,15 @@ export default function ReceiptDetail() {
   const [settlingId, setSettlingId] = useState<string | null>(null);
   const [settledIds, setSettledIds] = useState<Set<string>>(new Set());
   const [shareDataUrl, setShareDataUrl] = useState<string | null>(null);
+  const [availableGroups, setAvailableGroups] = useState<GroupSummary[]>([]);
+  const [assigningGroup, setAssigningGroup] = useState(false);
   const [groups, setGroups] = useState<SplitGroup[]>([]);
   const [groupMode, setGroupMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!id) return;
+    listGroups().then(({ groups: g }) => setAvailableGroups(g)).catch(() => {});
     Promise.all([getReceipt(id), calculateSplit(id), getMe()]).then(([r, s, m]) => {
       setReceipt(r.receipt);
       setSplits(s.splits);
@@ -459,6 +462,31 @@ export default function ReceiptDetail() {
               );
             })}
           </>
+        )}
+
+        {/* Group assignment */}
+        {availableGroups.length > 0 && (
+          <div className="card space-y-2">
+            <p className="text-sm font-medium text-gray-700">Group</p>
+            <select
+              disabled={assigningGroup}
+              value={receipt.group_id ?? ''}
+              onChange={async (e) => {
+                const newGroupId = e.target.value || null;
+                setAssigningGroup(true);
+                try {
+                  await assignReceiptToGroup(id!, newGroupId);
+                  setReceipt((prev) => prev ? { ...prev, group_id: newGroupId } : prev);
+                } finally {
+                  setAssigningGroup(false);
+                }
+              }}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300 disabled:opacity-50"
+            >
+              <option value="">No group</option>
+              {availableGroups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          </div>
         )}
 
         {/* Line items */}

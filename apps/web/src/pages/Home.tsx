@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { getBalances, listReceipts, getBalanceBreakdown, settle, getMe, type BreakdownRow } from '../lib/api';
-import type { BalanceSummary, Receipt, User } from '@split-it/types';
+import { Link, useNavigate } from 'react-router-dom';
+import { getBalances, listReceipts, getBalanceBreakdown, settle, getMe, listGroups, createGroup, type BreakdownRow } from '../lib/api';
+import type { BalanceSummary, GroupSummary, Receipt, User } from '@split-it/types';
 
 function formatMoney(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -132,14 +132,21 @@ function SwipeRow({
 
 
 export default function Home() {
+  const navigate = useNavigate();
   const [balances, setBalances] = useState<BalanceSummary[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [balancesLoading, setBalancesLoading] = useState(true);
   const [receiptsLoading, setReceiptsLoading] = useState(true);
+  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [showNewGroup, setShowNewGroup] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
   const [error, setError] = useState('');
   const [sheet, setSheet] = useState<BreakdownSheet | null>(null);
   const [settling, setSettling] = useState(false);
   const [settleError, setSettleError] = useState('');
+  const [copyToast, setCopyToast] = useState('');
   const [dragY, setDragY] = useState(0);
   const dragYRef = useRef(0);
   const sheetDragging = useRef(false);
@@ -161,6 +168,11 @@ export default function Home() {
       .then((r) => setReceipts(r.receipts))
       .catch(() => {})
       .finally(() => setReceiptsLoading(false));
+
+    listGroups()
+      .then(({ groups: g }) => setGroups(g))
+      .catch(() => {})
+      .finally(() => setGroupsLoading(false));
   }, []);
 
   // Pre-warm breakdown cache for all of the current user's balances
@@ -276,6 +288,20 @@ export default function Home() {
     }
   }
 
+  async function handleCreateGroup() {
+    if (!newGroupName.trim()) return;
+    setCreatingGroup(true);
+    try {
+      const { group } = await createGroup(newGroupName.trim());
+      setShowNewGroup(false);
+      setNewGroupName('');
+      navigate(`/groups/${group.id}`);
+    } catch {
+    } finally {
+      setCreatingGroup(false);
+    }
+  }
+
   const totalOwed = balances.reduce((s, b) => s + b.they_owe, 0);
   const totalOwing = balances.reduce((s, b) => s + b.you_owe, 0);
   const net = totalOwed - totalOwing;
@@ -329,6 +355,54 @@ export default function Home() {
             <p className="text-xs mt-1 font-mono break-all">{error}</p>
           </div>
         )}
+
+        {/* Groups */}
+        <section>
+          <div className="flex items-center justify-between mb-3 px-1">
+            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Groups</h2>
+            <button onClick={() => setShowNewGroup(true)} className="text-xs font-medium text-brand-600 px-2.5 py-1 rounded-lg bg-brand-50 active:bg-brand-100">
+              + New
+            </button>
+          </div>
+          {groupsLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : groups.length === 0 ? (
+            <button onClick={() => setShowNewGroup(true)} className="card w-full text-center py-5 active:bg-gray-50">
+              <p className="text-gray-400 text-sm">No groups yet.</p>
+              <p className="text-brand-600 text-xs font-medium mt-1">Create one for a trip or event</p>
+            </button>
+          ) : (
+            <div className="space-y-2">
+              {groups.map((g) => (
+                <button key={g.id} onClick={() => navigate(`/groups/${g.id}`)} className="card w-full flex items-center justify-between text-left active:bg-gray-50 transition-colors">
+                  <div className="flex-1 min-w-0 mr-3">
+                    <p className="font-medium text-sm truncate">{g.name}</p>
+                    <div className="flex gap-1 mt-1.5">
+                      {g.members.slice(0, 5).map((m) => (
+                        <div key={m.id} className="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-semibold text-gray-600">
+                          {(m.display_name ?? m.email)[0].toUpperCase()}
+                        </div>
+                      ))}
+                      {g.member_count > 5 && <div className="w-5 h-5 rounded-full bg-gray-100 flex items-center justify-center text-[10px] text-gray-400">+{g.member_count - 5}</div>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="text-right">
+                      {g.they_owe > 0
+                        ? <><p className="font-semibold text-green-600 text-sm">+{formatMoney(g.they_owe)}</p><p className="text-xs text-gray-400">owed to you</p></>
+                        : g.you_owe > 0
+                          ? <><p className="font-semibold text-red-500 text-sm">-{formatMoney(g.you_owe)}</p><p className="text-xs text-gray-400">you owe</p></>
+                          : <p className="text-xs text-gray-400">Settled up</p>}
+                    </div>
+                    <span className="text-gray-300 text-sm">›</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
 
         {/* Balances */}
         <section>
@@ -401,6 +475,28 @@ export default function Home() {
       </div>
 
 
+      {/* New group modal */}
+      {showNewGroup && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => { setShowNewGroup(false); setNewGroupName(''); }} />
+          <div className="fixed bottom-0 left-0 right-0 z-50 bg-white rounded-t-3xl shadow-2xl p-6 pb-10">
+            <h3 className="font-bold text-base mb-4">New Group</h3>
+            <input
+              autoFocus
+              type="text"
+              placeholder="Group name (e.g. Cancun 2026)"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleCreateGroup()}
+              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-300 mb-3"
+            />
+            <button onClick={handleCreateGroup} disabled={creatingGroup || !newGroupName.trim()} className="btn-primary w-full">
+              {creatingGroup ? 'Creating…' : 'Create Group'}
+            </button>
+          </div>
+        </>
+      )}
+
       {/* Balance breakdown bottom sheet */}
       {sheet && (
         <>
@@ -430,12 +526,12 @@ export default function Home() {
                   <div className="text-right">
                     {sheet.balance.they_owe > 0 ? (
                       <>
-                        <p className="font-bold text-green-600 text-lg">{formatMoney(sheet.balance.they_owe)}</p>
+                        <button onClick={() => { const a = sheet.balance.they_owe; setCopyToast(`$${a.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(a.toFixed(2)).catch(() => {}); }} className="font-bold text-green-600 text-lg active:opacity-60">{formatMoney(sheet.balance.they_owe)}</button>
                         <p className="text-xs text-gray-400">owes you</p>
                       </>
                     ) : (
                       <>
-                        <p className="font-bold text-red-500 text-lg">{formatMoney(sheet.balance.you_owe)}</p>
+                        <button onClick={() => { const a = sheet.balance.you_owe; setCopyToast(`$${a.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(a.toFixed(2)).catch(() => {}); }} className="font-bold text-red-500 text-lg active:opacity-60">{formatMoney(sheet.balance.you_owe)}</button>
                         <p className="text-xs text-gray-400">you owe</p>
                       </>
                     )}
@@ -468,7 +564,7 @@ export default function Home() {
                                 <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
                                 <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
                               </Link>
-                              <span className="font-semibold text-sm text-green-600 ml-2 flex-shrink-0">+{formatMoney(row.amount)}</span>
+                              <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-green-600 ml-2 flex-shrink-0 active:opacity-60">+{formatMoney(row.amount)}</button>
                             </div>
                           </SwipeRow>
                         ))}
@@ -494,7 +590,7 @@ export default function Home() {
                                 <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
                                 <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
                               </Link>
-                              <span className="font-semibold text-sm text-red-500 ml-2 flex-shrink-0">-{formatMoney(row.amount)}</span>
+                              <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-red-500 ml-2 flex-shrink-0 active:opacity-60">-{formatMoney(row.amount)}</button>
                             </div>
                           </SwipeRow>
                         ))}
@@ -554,6 +650,14 @@ export default function Home() {
             )}
           </div>
         </>
+      )}
+
+      {copyToast && (
+        <div className="fixed inset-0 flex items-center justify-center z-[999] pointer-events-none">
+          <div className="bg-gray-900 text-white text-sm font-semibold px-5 py-3 rounded-2xl shadow-2xl">
+            {copyToast}
+          </div>
+        </div>
       )}
     </div>
   );
