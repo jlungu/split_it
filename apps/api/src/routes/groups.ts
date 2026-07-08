@@ -464,4 +464,56 @@ router.get('/:id/breakdown/:peerId', async (c) => {
   });
 });
 
+// Sum of the current user's actual assignment amounts across all group receipts.
+// This is settlement-independent — it reflects the user's true share of expenses.
+router.get('/:id/my-spend', async (c) => {
+  const userId = await requireAuth(c);
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401);
+
+  const groupId = c.req.param('id');
+  if (!(await assertMember(groupId, userId))) return c.json({ error: 'Forbidden' }, 403);
+
+  const { data: receipts } = await supabase
+    .from('receipts')
+    .select('id, subtotal, tax, tip')
+    .eq('group_id', groupId);
+
+  if (!receipts?.length) return c.json({ my_spend: 0 });
+
+  const { data: lineItems } = await supabase
+    .from('line_items')
+    .select('id, receipt_id')
+    .in('receipt_id', receipts.map((r) => r.id));
+
+  if (!lineItems?.length) return c.json({ my_spend: 0 });
+
+  const liToReceipt = new Map(lineItems.map((li) => [li.id, li.receipt_id]));
+
+  const { data: assignments } = await supabase
+    .from('assignments')
+    .select('line_item_id, computed_amount')
+    .in('line_item_id', lineItems.map((li) => li.id))
+    .eq('user_id', userId);
+
+  if (!assignments?.length) return c.json({ my_spend: 0 });
+
+  const byReceipt = new Map<string, number>();
+  for (const a of assignments) {
+    const rid = liToReceipt.get(a.line_item_id);
+    if (rid) byReceipt.set(rid, (byReceipt.get(rid) ?? 0) + a.computed_amount);
+  }
+
+  let total = 0;
+  for (const [rid, subtotalAmt] of byReceipt) {
+    const r = receipts.find((x) => x.id === rid);
+    if (!r) continue;
+    const overhead = (r.tax ?? 0) + (r.tip ?? 0);
+    const sub = r.subtotal ?? 0;
+    const taxShare = sub > 0 ? Number(((subtotalAmt / sub) * overhead).toFixed(2)) : 0;
+    total += Number((subtotalAmt + taxShare).toFixed(2));
+  }
+
+  return c.json({ my_spend: Number(total.toFixed(2)) });
+});
+
 export default router;
