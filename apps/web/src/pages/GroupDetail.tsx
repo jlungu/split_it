@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   getGroup,
@@ -12,7 +12,11 @@ import {
   getMe,
   searchUsers,
   getGroupMySpend,
+  getGroupPairs,
+  addGroupPair,
+  removeGroupPair,
 } from '../lib/api';
+import type { GroupPair } from '../lib/api';
 import type { BalanceSummary, GroupMember, Receipt, User } from '@split-it/types';
 import type { BreakdownRow } from '../lib/api';
 
@@ -88,6 +92,19 @@ function Avatar({ name }: { name: string }) {
   );
 }
 
+function PairAvatar({ name1, name2 }: { name1: string; name2: string }) {
+  return (
+    <div className="relative w-9 h-9 flex-shrink-0">
+      <div className="absolute top-0 left-0 w-6 h-6 rounded-full bg-gray-200 text-gray-600 font-bold text-xs flex items-center justify-center">
+        {(name1[0] ?? '?').toUpperCase()}
+      </div>
+      <div className="absolute bottom-0 right-0 w-6 h-6 rounded-full bg-gray-300 text-gray-600 font-bold text-xs flex items-center justify-center border border-white">
+        {(name2[0] ?? '?').toUpperCase()}
+      </div>
+    </div>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -95,6 +112,64 @@ function CopyIcon() {
       <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
     </svg>
   );
+}
+
+
+function mergeBalancesWithPairs(
+  balances: BalanceSummary[],
+  pairs: GroupPair[],
+  members: GroupMember[],
+  meId: string | undefined,
+): BalanceSummary[] {
+  const memberName = (uid: string) => {
+    if (uid === meId) return 'Me';
+    const m = members.find((mm) => mm.user_id === uid);
+    return m ? (m.user?.display_name ?? m.user?.email?.split('@')[0] ?? '?') : '?';
+  };
+
+  const result: BalanceSummary[] = [...balances];
+  for (const pair of pairs) {
+    const [uid1, uid2] = [pair.user_id_1, pair.user_id_2];
+    const idx1 = result.findIndex((b) => b.peer_user_id === uid1);
+    const idx2 = result.findIndex((b) => b.peer_user_id === uid2);
+
+    if (idx1 !== -1 && idx2 !== -1) {
+      // Both have balances — normal two-sided merge
+      const b1 = result[idx1];
+      const b2 = result[idx2];
+      const [lo, hi] = idx1 < idx2 ? [idx1, idx2] : [idx2, idx1];
+      result.splice(hi, 1);
+      result.splice(lo, 1);
+      const rawNet = (b1.they_owe + b2.they_owe) - (b1.you_owe + b2.you_owe);
+      const name1 = b1.peer_display_name ?? b1.peer_email.split('@')[0];
+      const name2 = b2.peer_display_name ?? b2.peer_email.split('@')[0];
+      result.push({
+        peer_user_id: pair.id,
+        peer_email: '',
+        peer_display_name: `${name1} & ${name2}`,
+        peer_venmo_handle: null,
+        peer_zelle_contact: null,
+        net_amount: rawNet,
+        they_owe: rawNet > 0 ? rawNet : 0,
+        you_owe: rawNet < 0 ? -rawNet : 0,
+        pair_member_ids: [uid1, uid2],
+      });
+    } else if (idx1 !== -1 || idx2 !== -1) {
+      // One-sided — rename the present member's card to include both names
+      const presentIdx = idx1 !== -1 ? idx1 : idx2;
+      const presentUid = idx1 !== -1 ? uid1 : uid2;
+      const absentUid = idx1 !== -1 ? uid2 : uid1;
+      const b = result[presentIdx];
+      const presentName = b.peer_display_name ?? b.peer_email.split('@')[0];
+      const absentName = memberName(absentUid);
+      const displayName = presentUid === uid1
+        ? `${presentName} & ${absentName}`
+        : `${absentName} & ${presentName}`;
+      result[presentIdx] = { ...b, peer_display_name: displayName, pair_member_ids: [uid1, uid2] };
+    }
+    // Neither has a balance — pair stored but nothing to show yet
+  }
+  return result;
 }
 
 const SWIPE_THRESHOLD = 48;
@@ -230,6 +305,9 @@ export default function GroupDetail() {
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [me, setMe] = useState<User | null>(null);
   const [mySpend, setMySpend] = useState<number | null>(null);
+  const [pairs, setPairs] = useState<GroupPair[]>([]);
+  const mergedBalances = useMemo(() => mergeBalancesWithPairs(balances, pairs, members, me?.id), [balances, pairs, members, me]);
+  const [pairingForMemberId, setPairingForMemberId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [balancesLoading, setBalancesLoading] = useState(true);
   const [receiptsLoading, setReceiptsLoading] = useState(true);
@@ -280,6 +358,9 @@ export default function GroupDetail() {
       .finally(() => setReceiptsLoading(false));
     getGroupMySpend(groupId)
       .then(({ my_spend }) => setMySpend(my_spend))
+      .catch(() => {});
+    getGroupPairs(groupId)
+      .then(({ pairs: p }) => setPairs(p))
       .catch(() => {});
   }, [groupId]);
 
@@ -342,26 +423,59 @@ export default function GroupDetail() {
   }, [showMembersSheet]);
 
   async function openBreakdown(b: BalanceSummary) {
-    const cached = breakdownCache.current[b.peer_user_id];
+    // Two-sided pair: peer_user_id is the synthetic pair.id (not in pair_member_ids)
+    const isTwoSidedPair = b.pair_member_ids && !b.pair_member_ids.includes(b.peer_user_id);
+    if (isTwoSidedPair) {
+      const [uid1, uid2] = b.pair_member_ids!;
+      setSheet({ balance: b, they_owe_me: [], i_owe_them: [], loading: true });
+      try {
+        const [d1, d2] = await Promise.all([
+          breakdownCache.current[uid1] ?? getGroupBreakdown(groupId!, uid1),
+          breakdownCache.current[uid2] ?? getGroupBreakdown(groupId!, uid2),
+        ]);
+        const tag = (rows: BreakdownRow[], uid: string) => rows.map((r) => ({ ...r, peer_user_id: uid }));
+        const they_owe_me = [...tag(d1.they_owe_me, uid1), ...tag(d2.they_owe_me, uid2)].sort((x, y) => y.date.localeCompare(x.date));
+        const i_owe_them = [...tag(d1.i_owe_them, uid1), ...tag(d2.i_owe_them, uid2)].sort((x, y) => y.date.localeCompare(x.date));
+        setSheet({ balance: b, they_owe_me, i_owe_them, loading: false });
+      } catch {
+        setSheet((prev) => prev ? { ...prev, loading: false } : null);
+      }
+      return;
+    }
+    // Individual or one-sided pair — peer_user_id is always the real person's ID
+    const uid = b.peer_user_id;
+    const cached = breakdownCache.current[uid];
     if (cached) { setSheet({ balance: b, ...cached, loading: false }); return; }
     setSheet({ balance: b, they_owe_me: [], i_owe_them: [], loading: true });
     try {
-      const data = await getGroupBreakdown(groupId!, b.peer_user_id);
-      breakdownCache.current[b.peer_user_id] = data;
+      const data = await getGroupBreakdown(groupId!, uid);
+      breakdownCache.current[uid] = data;
       setSheet({ balance: b, ...data, loading: false });
     } catch {
       setSheet((prev) => prev ? { ...prev, loading: false } : null);
     }
   }
 
-  async function settleRow(receiptId: string, toUserId: string, amount: number, fromUserId?: string) {
+  async function settleRow(row: BreakdownRow, direction: 'they_owe_me' | 'i_owe_them') {
+    if (!me || !sheet) return;
+    const peerUserId = row.peer_user_id ?? sheet.balance.peer_user_id;
     setSettleError('');
     try {
-      await settle({ receipt_id: receiptId, to_user_id: toUserId, from_user_id: fromUserId, amount, payment_method: 'other' });
-      if (sheet) delete breakdownCache.current[sheet.balance.peer_user_id];
+      if (direction === 'they_owe_me') {
+        await settle({ receipt_id: row.receipt_id, to_user_id: me.id, from_user_id: peerUserId, amount: row.amount, payment_method: 'other' });
+      } else {
+        await settle({ receipt_id: row.receipt_id, to_user_id: peerUserId, amount: row.amount, payment_method: 'other' });
+      }
+      delete breakdownCache.current[peerUserId];
       setSheet((s) => {
         if (!s) return null;
-        const updated = { ...s, they_owe_me: s.they_owe_me.filter((r) => r.receipt_id !== receiptId), i_owe_them: s.i_owe_them.filter((r) => r.receipt_id !== receiptId) };
+        const notThisRow = (r: BreakdownRow) =>
+          !(r.receipt_id === row.receipt_id && (r.peer_user_id ?? '') === (row.peer_user_id ?? ''));
+        const updated = {
+          ...s,
+          they_owe_me: direction === 'they_owe_me' ? s.they_owe_me.filter(notThisRow) : s.they_owe_me,
+          i_owe_them: direction === 'i_owe_them' ? s.i_owe_them.filter(notThisRow) : s.i_owe_them,
+        };
         return updated.they_owe_me.length === 0 && updated.i_owe_them.length === 0 ? null : updated;
       });
       getGroupBalances(groupId!).then(({ balances: b }) => setBalances(b)).catch(() => {});
@@ -377,9 +491,14 @@ export default function GroupDetail() {
     const { peer_user_id } = sheet.balance;
     try {
       await Promise.all([
-        ...sheet.i_owe_them.map((r) => settle({ receipt_id: r.receipt_id, to_user_id: peer_user_id, amount: r.amount, payment_method: method })),
-        ...sheet.they_owe_me.map((r) => settle({ receipt_id: r.receipt_id, from_user_id: peer_user_id, to_user_id: me.id, amount: r.amount, payment_method: method })),
+        ...sheet.i_owe_them.map((r) => settle({ receipt_id: r.receipt_id, to_user_id: r.peer_user_id ?? peer_user_id, amount: r.amount, payment_method: method })),
+        ...sheet.they_owe_me.map((r) => settle({ receipt_id: r.receipt_id, from_user_id: r.peer_user_id ?? peer_user_id, to_user_id: me.id, amount: r.amount, payment_method: method })),
       ]);
+      if (sheet.balance.pair_member_ids) {
+        sheet.balance.pair_member_ids.forEach((uid) => delete breakdownCache.current[uid]);
+      } else {
+        delete breakdownCache.current[peer_user_id];
+      }
       setSheet(null);
       getGroupBalances(groupId!).then(({ balances: b }) => setBalances(b)).catch(() => {});
     } catch (e) {
@@ -392,11 +511,31 @@ export default function GroupDetail() {
   async function settleBalance(b: BalanceSummary, method: 'venmo' | 'zelle' | 'cash' | 'other') {
     if (!me || !groupId) return;
     try {
-      const data = breakdownCache.current[b.peer_user_id] ?? await getGroupBreakdown(groupId, b.peer_user_id);
-      await Promise.all([
-        ...data.i_owe_them.map((r) => settle({ receipt_id: r.receipt_id, to_user_id: b.peer_user_id, amount: r.amount, payment_method: method })),
-        ...data.they_owe_me.map((r) => settle({ receipt_id: r.receipt_id, from_user_id: b.peer_user_id, to_user_id: me.id, amount: r.amount, payment_method: method })),
-      ]);
+      const isTwoSidedPair = b.pair_member_ids && !b.pair_member_ids.includes(b.peer_user_id);
+      if (isTwoSidedPair) {
+        const [uid1, uid2] = b.pair_member_ids!;
+        const [d1, d2] = await Promise.all([
+          breakdownCache.current[uid1] ?? getGroupBreakdown(groupId, uid1),
+          breakdownCache.current[uid2] ?? getGroupBreakdown(groupId, uid2),
+        ]);
+        await Promise.all([
+          ...d1.i_owe_them.map((r) => settle({ receipt_id: r.receipt_id, to_user_id: uid1, amount: r.amount, payment_method: method })),
+          ...d1.they_owe_me.map((r) => settle({ receipt_id: r.receipt_id, from_user_id: uid1, to_user_id: me.id, amount: r.amount, payment_method: method })),
+          ...d2.i_owe_them.map((r) => settle({ receipt_id: r.receipt_id, to_user_id: uid2, amount: r.amount, payment_method: method })),
+          ...d2.they_owe_me.map((r) => settle({ receipt_id: r.receipt_id, from_user_id: uid2, to_user_id: me.id, amount: r.amount, payment_method: method })),
+        ]);
+        delete breakdownCache.current[uid1];
+        delete breakdownCache.current[uid2];
+      } else {
+        // Individual or one-sided pair — always use peer_user_id
+        const uid = b.peer_user_id;
+        const data = breakdownCache.current[uid] ?? await getGroupBreakdown(groupId, uid);
+        await Promise.all([
+          ...data.i_owe_them.map((r) => settle({ receipt_id: r.receipt_id, to_user_id: uid, amount: r.amount, payment_method: method })),
+          ...data.they_owe_me.map((r) => settle({ receipt_id: r.receipt_id, from_user_id: uid, to_user_id: me.id, amount: r.amount, payment_method: method })),
+        ]);
+        delete breakdownCache.current[uid];
+      }
       getGroupBalances(groupId).then(({ balances: fresh }) => setBalances(fresh)).catch(() => {});
     } catch {}
   }
@@ -435,6 +574,7 @@ export default function GroupDetail() {
     setMemberQuery('');
     setMemberResults([]);
     setPendingMembers([]);
+    setPairingForMemberId(null);
   }
 
   async function handleAddMembers() {
@@ -480,6 +620,10 @@ export default function GroupDetail() {
   }
 
   const peerName = (b: BalanceSummary) => b.peer_display_name ?? b.peer_email.split('@')[0];
+  const getMemberName = (uid: string) => {
+    const m = members.find((mm) => mm.user_id === uid);
+    return m ? (m.user?.display_name ?? m.user?.email?.split('@')[0] ?? '?') : '?';
+  };
 
   const totalTheyOwe = balances.reduce((sum, b) => sum + b.they_owe, 0);
   const totalIOwe = balances.reduce((sum, b) => sum + b.you_owe, 0);
@@ -490,7 +634,7 @@ export default function GroupDetail() {
       {/* Header */}
       <div className="bg-white border-b border-gray-100 px-4 py-3" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' }}>
         <div className="flex items-center gap-3">
-          <button onClick={() => navigate(-1)} className="text-gray-400 text-lg leading-none p-1">‹</button>
+          <button onClick={() => navigate(-1)} className="text-gray-400 text-2xl leading-none p-2 -ml-1">‹</button>
           {editingName ? (
             <input
               ref={nameInputRef}
@@ -543,11 +687,11 @@ export default function GroupDetail() {
         <section>
           {balancesLoading ? (
             <div className="space-y-2"><Skeleton className="h-4 w-24 mb-3" /><Skeleton className="h-16 w-full" /></div>
-          ) : balances.length > 0 && (
+          ) : mergedBalances.length > 0 && (
             <>
               <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3 px-1">Balances</h2>
               <div className="space-y-2">
-                {balances.map((b) => (
+                {mergedBalances.map((b) => (
                   <SwipeRow
                     key={b.peer_user_id}
                     className="overflow-hidden rounded-2xl"
@@ -557,12 +701,22 @@ export default function GroupDetail() {
                       ...(b.peer_zelle_contact ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: b.peer_zelle_contact!, name: peerName(b), amount: b.they_owe || b.you_owe }) }] : []),
                     ]}
                   >
-                    <button onClick={() => openBreakdown(b)} className="card w-full flex items-center justify-between text-left active:bg-gray-50 transition-colors">
+                    <button
+                      onClick={() => openBreakdown(b)}
+                      className="card w-full flex items-center justify-between text-left active:bg-gray-50 transition-colors"
+                    >
                       <div className="flex items-center gap-3">
-                        <Avatar name={peerName(b)} />
+                        {b.pair_member_ids ? (
+                          <PairAvatar
+                            name1={(b.peer_display_name ?? '?').split(' & ')[0]}
+                            name2={(b.peer_display_name ?? '?').split(' & ')[1] ?? '?'}
+                          />
+                        ) : (
+                          <Avatar name={peerName(b)} />
+                        )}
                         <div>
                           <p className="font-semibold text-base">{peerName(b)}</p>
-                          <p className="text-xs text-gray-400">{b.they_owe > 0 ? 'owes you' : 'you owe'}</p>
+                          <p className="text-xs text-gray-400">{b.they_owe > 0 ? (b.pair_member_ids ? 'owe you' : 'owes you') : 'you owe'}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -579,7 +733,7 @@ export default function GroupDetail() {
               </div>
             </>
           )}
-          {!balancesLoading && balances.length === 0 && (
+          {!balancesLoading && mergedBalances.length === 0 && (
             <div className="card text-center py-6">
               <p className="text-gray-400 text-sm">All settled up in this group.</p>
             </div>
@@ -622,33 +776,92 @@ export default function GroupDetail() {
             style={{ transform: `translateY(${Math.max(0, membersDragY)}px)`, transition: membersDragging.current ? 'none' : 'transform 0.25s ease' }}
           >
             {/* Handle + title */}
-            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-gray-200 rounded-full" /></div>
-            <div className="px-6 py-3 border-b border-gray-100">
-              <h3 className="font-bold text-base">Members</h3>
+            <div className="select-none">
+              <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-gray-200 rounded-full" /></div>
+              <div className="px-6 py-3 border-b border-gray-100">
+                <h3 className="font-bold text-base">Members</h3>
+              </div>
             </div>
 
             {/* Member list */}
             <div ref={membersScrollRef} className="overflow-y-auto flex-1 px-6 py-3 space-y-1">
-              {members.map((m) => (
-                <div key={m.user_id} className="flex items-center gap-3 py-2.5">
-                  <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-sm font-semibold text-gray-600 flex-shrink-0">
-                    {(m.user?.display_name ?? m.user?.email ?? '?')[0].toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{m.user?.display_name ?? m.user?.email?.split('@')[0]}</p>
-                    {m.user?.display_name && <p className="text-xs text-gray-400">{m.user.email}</p>}
-                  </div>
-                  {m.user_id !== me?.id && (
-                    <button
-                      onClick={() => handleRemoveMember(m.user_id)}
-                      disabled={removingMember === m.user_id}
-                      className="text-xs text-red-400 px-2 py-1 rounded-lg active:bg-red-50 disabled:opacity-40"
-                    >
-                      {removingMember === m.user_id ? '…' : 'Remove'}
-                    </button>
-                  )}
+              {pairingForMemberId && (
+                <div className="flex items-center justify-between bg-brand-50 rounded-xl px-3 py-2 mb-1">
+                  <p className="text-xs font-medium text-brand-700">Tap a member to pair with</p>
+                  <button onClick={() => setPairingForMemberId(null)} className="text-xs text-brand-400 font-medium">Cancel</button>
                 </div>
-              ))}
+              )}
+              {members.map((m) => {
+                const memberPair = pairs.find((p) => p.user_id_1 === m.user_id || p.user_id_2 === m.user_id);
+                const pairPartnerName = (() => {
+                  if (!memberPair) return null;
+                  const uid = memberPair.user_id_1 === m.user_id ? memberPair.user_id_2 : memberPair.user_id_1;
+                  const pm = members.find((mm) => mm.user_id === uid);
+                  return pm ? (pm.user?.display_name ?? pm.user?.email?.split('@')[0] ?? '?') : null;
+                })();
+                const name = m.user?.display_name ?? m.user?.email?.split('@')[0] ?? '?';
+                const isMe = m.user_id === me?.id;
+                const isPairingMode = pairingForMemberId !== null;
+                const isThisThePairer = m.user_id === pairingForMemberId;
+                const isEligiblePartner = isPairingMode && !isThisThePairer && !memberPair;
+                return (
+                  <div key={m.user_id} className={`flex items-center gap-3 py-2.5 ${isThisThePairer ? 'opacity-50' : ''}`}>
+                    <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-sm font-semibold text-gray-600 flex-shrink-0">
+                      {name[0].toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{name}{isMe ? ' (you)' : ''}</p>
+                      {memberPair && pairPartnerName
+                        ? <p className="text-xs text-gray-400">Paired with {pairPartnerName}</p>
+                        : isThisThePairer
+                          ? <p className="text-xs text-brand-500">Select a partner below</p>
+                          : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isEligiblePartner ? (
+                        <button
+                          onClick={async () => {
+                            if (!groupId) return;
+                            const { pair } = await addGroupPair(groupId, pairingForMemberId!, m.user_id);
+                            setPairs((prev) => [...prev, pair]);
+                            setPairingForMemberId(null);
+                          }}
+                          className="text-xs font-semibold text-white bg-brand-500 px-3 py-1.5 rounded-lg active:opacity-80"
+                        >
+                          Pair
+                        </button>
+                      ) : memberPair ? (
+                        <button
+                          onClick={async () => {
+                            if (!groupId) return;
+                            await removeGroupPair(groupId, memberPair.id);
+                            setPairs((prev) => prev.filter((p) => p.id !== memberPair.id));
+                          }}
+                          className="text-xs text-red-400 px-2 py-1 rounded-lg active:bg-red-50"
+                        >
+                          Unpair
+                        </button>
+                      ) : !isPairingMode ? (
+                        <button
+                          onClick={() => setPairingForMemberId(m.user_id)}
+                          className="text-xs text-gray-500 px-2 py-1 rounded-lg bg-gray-100 active:bg-gray-200"
+                        >
+                          Pair
+                        </button>
+                      ) : null}
+                      {m.user_id !== me?.id && !isPairingMode && (
+                        <button
+                          onClick={() => handleRemoveMember(m.user_id)}
+                          disabled={removingMember === m.user_id}
+                          className="text-xs text-red-400 px-2 py-1 rounded-lg active:bg-red-50 disabled:opacity-40"
+                        >
+                          {removingMember === m.user_id ? '…' : 'Remove'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             {/* Add members section */}
@@ -743,8 +956,8 @@ export default function GroupDetail() {
                       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">{peerName(sheet.balance)} owes you</p>
                       <div className="space-y-2">
                         {sheet.they_owe_me.map((row) => (
-                          <SwipeRow key={row.receipt_id} actions={[
-                            { label: 'Received', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => me && settleRow(row.receipt_id, me.id, row.amount, sheet.balance.peer_user_id) },
+                          <SwipeRow key={`${row.receipt_id}-${row.peer_user_id ?? ''}`} actions={[
+                            { label: 'Received', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row, 'they_owe_me') },
                             ...(sheet.balance.peer_venmo_handle ? [{ label: 'Request', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=charge&recipients=${encodeURIComponent(sheet.balance.peer_venmo_handle!)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; } }] : []),
                             ...(sheet.balance.peer_zelle_contact ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: sheet.balance.peer_zelle_contact!, name: peerName(sheet.balance), amount: row.amount }) }] : []),
                           ]}>
@@ -752,6 +965,7 @@ export default function GroupDetail() {
                               <Link to={`/receipts/${row.receipt_id}`} onClick={() => setSheet(null)} className="flex-1 min-w-0">
                                 <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
                                 <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
+                                {sheet.balance.pair_member_ids && <p className="text-xs font-medium text-gray-500">{getMemberName(row.peer_user_id ?? sheet.balance.peer_user_id)}</p>}
                               </Link>
                               <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-green-600 ml-2 flex-shrink-0 active:opacity-60">+{formatMoney(row.amount)}</button>
                             </div>
@@ -765,15 +979,16 @@ export default function GroupDetail() {
                       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">You owe {peerName(sheet.balance)}</p>
                       <div className="space-y-2">
                         {sheet.i_owe_them.map((row) => (
-                          <SwipeRow key={row.receipt_id} actions={[
-                            { label: 'Paid', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row.receipt_id, sheet.balance.peer_user_id, row.amount) },
-                            ...(sheet.balance.peer_venmo_handle ? [{ label: 'Send', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(sheet.balance.peer_venmo_handle!)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; settleRow(row.receipt_id, sheet.balance.peer_user_id, row.amount); } }] : []),
+                          <SwipeRow key={`${row.receipt_id}-${row.peer_user_id ?? ''}`} actions={[
+                            { label: 'Paid', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row, 'i_owe_them') },
+                            ...(sheet.balance.peer_venmo_handle ? [{ label: 'Send', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(sheet.balance.peer_venmo_handle!)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; settleRow(row, 'i_owe_them'); } }] : []),
                             ...(sheet.balance.peer_zelle_contact ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: sheet.balance.peer_zelle_contact!, name: peerName(sheet.balance), amount: row.amount }) }] : []),
                           ]}>
                             <div className="flex items-center justify-between py-3 border-b border-gray-50">
                               <Link to={`/receipts/${row.receipt_id}`} onClick={() => setSheet(null)} className="flex-1 min-w-0">
                                 <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
                                 <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
+                                {sheet.balance.pair_member_ids && <p className="text-xs font-medium text-gray-500">{getMemberName(row.peer_user_id ?? sheet.balance.peer_user_id)}</p>}
                               </Link>
                               <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-red-500 ml-2 flex-shrink-0 active:opacity-60">-{formatMoney(row.amount)}</button>
                             </div>

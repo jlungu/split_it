@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { calculateSplit, getReceipt, settle, getMe, deleteReceipt, listGroups, assignReceiptToGroup } from '../lib/api';
+import { calculateSplit, getReceipt, settle, getMe, deleteReceipt, listGroups, assignReceiptToGroup, getGroupPairs } from '../lib/api';
 import type { GroupSummary, ReceiptWithDetails, SplitCalculation, User } from '@split-it/types';
 
 function formatMoney(n: number) {
@@ -215,6 +215,20 @@ export default function ReceiptDetail() {
         }
       }
       setPeerUsers(map);
+      if (r.receipt.group_id) {
+        const assigneeIds = new Set<string>();
+        for (const li of r.receipt.line_items) {
+          for (const a of li.assignments) assigneeIds.add(a.user_id);
+        }
+        getGroupPairs(r.receipt.group_id)
+          .then(({ pairs }) => {
+            const auto: SplitGroup[] = pairs
+              .filter((p) => assigneeIds.has(p.user_id_1) && assigneeIds.has(p.user_id_2))
+              .map((p) => ({ ids: [p.user_id_1, p.user_id_2] }));
+            if (auto.length > 0) setGroups(auto);
+          })
+          .catch(() => {});
+      }
     }).finally(() => setLoading(false));
   }, [id]);
 

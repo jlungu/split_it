@@ -92,6 +92,7 @@ export interface BalanceSummary {
   net_amount: number; // positive = they owe you, negative = you owe them
   you_owe: number;    // always >= 0
   they_owe: number;   // always >= 0
+  pair_member_ids?: [string, string]; // present only on client-side merged pair rows
 }
 
 // Per-receipt breakdown row used in balance breakdown responses
@@ -100,6 +101,15 @@ export interface BreakdownRow {
   restaurant_name: string | null;
   date: string;
   amount: number;
+  peer_user_id?: string; // set on rows from a merged pair to identify the individual
+}
+
+// Pairs within a group (two members treated as one unit in balance view)
+export interface GroupPair {
+  id: string;
+  group_id: string;
+  user_id_1: string;
+  user_id_2: string;
 }
 
 // Groups

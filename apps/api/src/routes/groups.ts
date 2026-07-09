@@ -516,4 +516,62 @@ router.get('/:id/my-spend', async (c) => {
   return c.json({ my_spend: Number(total.toFixed(2)) });
 });
 
+// List pairs for a group
+router.get('/:id/pairs', async (c) => {
+  const userId = await requireAuth(c);
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401);
+
+  const groupId = c.req.param('id');
+  if (!(await assertMember(groupId, userId))) return c.json({ error: 'Forbidden' }, 403);
+
+  const { data: pairs, error } = await supabase
+    .from('group_pairs')
+    .select('id, group_id, user_id_1, user_id_2')
+    .eq('group_id', groupId);
+
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ pairs: pairs ?? [] });
+});
+
+// Create a pair within a group
+router.post('/:id/pairs', async (c) => {
+  const userId = await requireAuth(c);
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401);
+
+  const groupId = c.req.param('id');
+  if (!(await assertMember(groupId, userId))) return c.json({ error: 'Forbidden' }, 403);
+
+  const { user_id_1, user_id_2 } = await c.req.json<{ user_id_1: string; user_id_2: string }>();
+  if (!user_id_1 || !user_id_2) return c.json({ error: 'user_id_1 and user_id_2 are required' }, 400);
+  if (user_id_1 === user_id_2) return c.json({ error: 'Cannot pair a member with themselves' }, 400);
+
+  const { data: pair, error } = await supabase
+    .from('group_pairs')
+    .upsert({ group_id: groupId, user_id_1, user_id_2 }, { onConflict: 'group_id,user_id_1,user_id_2' })
+    .select()
+    .single();
+
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ pair }, 201);
+});
+
+// Delete a pair
+router.delete('/:id/pairs/:pairId', async (c) => {
+  const userId = await requireAuth(c);
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401);
+
+  const groupId = c.req.param('id');
+  if (!(await assertMember(groupId, userId))) return c.json({ error: 'Forbidden' }, 403);
+
+  const pairId = c.req.param('pairId');
+  const { error } = await supabase
+    .from('group_pairs')
+    .delete()
+    .eq('id', pairId)
+    .eq('group_id', groupId);
+
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ ok: true });
+});
+
 export default router;

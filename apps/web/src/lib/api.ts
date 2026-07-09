@@ -8,6 +8,7 @@ import type {
   ReceiptWithDetails,
   SplitCalculation,
   BalanceSummary,
+  GroupPair,
   BreakdownRow,
   Settlement,
   Group,
@@ -15,7 +16,7 @@ import type {
   GroupSummary,
 } from '@split-it/types';
 
-export type { BreakdownRow, Group, GroupMember, GroupSummary };
+export type { BreakdownRow, Group, GroupMember, GroupSummary, GroupPair };
 
 async function authHeader(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
@@ -167,6 +168,26 @@ export const getGroupBreakdown = (groupId: string, peerId: string) =>
   apiCache.fetch(`group:${groupId}:breakdown:${peerId}`, () =>
     request<{ they_owe_me: BreakdownRow[]; i_owe_them: BreakdownRow[] }>(`/api/groups/${groupId}/breakdown/${peerId}`)
   );
+
+export const getGroupPairs = (groupId: string) =>
+  apiCache.fetch(`group:${groupId}:pairs`, () =>
+    request<{ pairs: GroupPair[] }>(`/api/groups/${groupId}/pairs`)
+  );
+
+export const addGroupPair = async (groupId: string, uid1: string, uid2: string) => {
+  const result = await request<{ pair: GroupPair }>(`/api/groups/${groupId}/pairs`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id_1: uid1, user_id_2: uid2 }),
+  });
+  apiCache.invalidate(`group:${groupId}:pairs`);
+  return result;
+};
+
+export const removeGroupPair = async (groupId: string, pairId: string) => {
+  const result = await request<{ ok: boolean }>(`/api/groups/${groupId}/pairs/${pairId}`, { method: 'DELETE' });
+  apiCache.invalidate(`group:${groupId}:pairs`);
+  return result;
+};
 
 export const assignReceiptToGroup = async (receiptId: string, groupId: string | null) => {
   const result = await request<{ receipt: Receipt }>(`/api/receipts/${receiptId}`, {
