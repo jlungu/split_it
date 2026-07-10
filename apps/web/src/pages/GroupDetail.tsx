@@ -955,22 +955,28 @@ export default function GroupDetail() {
                     <div>
                       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">{peerName(sheet.balance)} owes you</p>
                       <div className="space-y-2">
-                        {sheet.they_owe_me.map((row) => (
-                          <SwipeRow key={`${row.receipt_id}-${row.peer_user_id ?? ''}`} actions={[
-                            { label: 'Received', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row, 'they_owe_me') },
-                            ...(sheet.balance.peer_venmo_handle ? [{ label: 'Request', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=charge&recipients=${encodeURIComponent(sheet.balance.peer_venmo_handle!)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; } }] : []),
-                            ...(sheet.balance.peer_zelle_contact ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: sheet.balance.peer_zelle_contact!, name: peerName(sheet.balance), amount: row.amount }) }] : []),
-                          ]}>
-                            <div className="flex items-center justify-between py-3 border-b border-gray-50">
-                              <Link to={`/receipts/${row.receipt_id}`} onClick={() => setSheet(null)} className="flex-1 min-w-0">
-                                <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
-                                <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
-                                {sheet.balance.pair_member_ids && <p className="text-xs font-medium text-gray-500">{getMemberName(row.peer_user_id ?? sheet.balance.peer_user_id)}</p>}
-                              </Link>
-                              <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-green-600 ml-2 flex-shrink-0 active:opacity-60">+{formatMoney(row.amount)}</button>
-                            </div>
-                          </SwipeRow>
-                        ))}
+                        {sheet.they_owe_me.map((row) => {
+                          const rowB = row.peer_user_id ? balances.find((b) => b.peer_user_id === row.peer_user_id) : null;
+                          const rowVenmo = rowB?.peer_venmo_handle ?? sheet.balance.peer_venmo_handle;
+                          const rowZelle = rowB?.peer_zelle_contact ?? sheet.balance.peer_zelle_contact;
+                          const rowName = rowB ? (rowB.peer_display_name ?? rowB.peer_email.split('@')[0]) : peerName(sheet.balance);
+                          return (
+                            <SwipeRow key={`${row.receipt_id}-${row.peer_user_id ?? ''}`} actions={[
+                              { label: 'Received', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row, 'they_owe_me') },
+                              ...(rowVenmo ? [{ label: 'Request', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=charge&recipients=${encodeURIComponent(rowVenmo)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; } }] : []),
+                              ...(rowZelle ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: rowZelle, name: rowName, amount: row.amount }) }] : []),
+                            ]}>
+                              <div className="flex items-center justify-between py-3 border-b border-gray-50">
+                                <Link to={`/receipts/${row.receipt_id}`} onClick={() => setSheet(null)} className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
+                                  <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
+                                  {sheet.balance.pair_member_ids && <p className="text-xs font-medium text-gray-500">{getMemberName(row.peer_user_id ?? sheet.balance.peer_user_id)}</p>}
+                                </Link>
+                                <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-green-600 ml-2 flex-shrink-0 active:opacity-60">+{formatMoney(row.amount)}</button>
+                              </div>
+                            </SwipeRow>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -978,22 +984,28 @@ export default function GroupDetail() {
                     <div>
                       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">You owe {peerName(sheet.balance)}</p>
                       <div className="space-y-2">
-                        {sheet.i_owe_them.map((row) => (
-                          <SwipeRow key={`${row.receipt_id}-${row.peer_user_id ?? ''}`} actions={[
-                            { label: 'Paid', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row, 'i_owe_them') },
-                            ...(sheet.balance.peer_venmo_handle ? [{ label: 'Send', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(sheet.balance.peer_venmo_handle!)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; settleRow(row, 'i_owe_them'); } }] : []),
-                            ...(sheet.balance.peer_zelle_contact ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: sheet.balance.peer_zelle_contact!, name: peerName(sheet.balance), amount: row.amount }) }] : []),
-                          ]}>
-                            <div className="flex items-center justify-between py-3 border-b border-gray-50">
-                              <Link to={`/receipts/${row.receipt_id}`} onClick={() => setSheet(null)} className="flex-1 min-w-0">
-                                <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
-                                <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
-                                {sheet.balance.pair_member_ids && <p className="text-xs font-medium text-gray-500">{getMemberName(row.peer_user_id ?? sheet.balance.peer_user_id)}</p>}
-                              </Link>
-                              <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-red-500 ml-2 flex-shrink-0 active:opacity-60">-{formatMoney(row.amount)}</button>
-                            </div>
-                          </SwipeRow>
-                        ))}
+                        {sheet.i_owe_them.map((row) => {
+                          const rowB = row.peer_user_id ? balances.find((b) => b.peer_user_id === row.peer_user_id) : null;
+                          const rowVenmo = rowB?.peer_venmo_handle ?? sheet.balance.peer_venmo_handle;
+                          const rowZelle = rowB?.peer_zelle_contact ?? sheet.balance.peer_zelle_contact;
+                          const rowName = rowB ? (rowB.peer_display_name ?? rowB.peer_email.split('@')[0]) : peerName(sheet.balance);
+                          return (
+                            <SwipeRow key={`${row.receipt_id}-${row.peer_user_id ?? ''}`} actions={[
+                              { label: 'Paid', bgColor: '#22c55e', icon: <span className="w-5 h-5 flex items-center justify-center text-lg leading-none">✓</span>, onClick: () => settleRow(row, 'i_owe_them') },
+                              ...(rowVenmo ? [{ label: 'Send', bgColor: '#3d95ce', icon: <VenmoIcon />, onClick: () => { window.location.href = `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(rowVenmo)}&amount=${row.amount.toFixed(2)}&note=${encodeURIComponent('Split It')}`; settleRow(row, 'i_owe_them'); } }] : []),
+                              ...(rowZelle ? [{ label: 'Zelle', bgColor: '#6d1ed4', icon: <ZelleIcon />, onClick: () => setZelleModal({ contact: rowZelle, name: rowName, amount: row.amount }) }] : []),
+                            ]}>
+                              <div className="flex items-center justify-between py-3 border-b border-gray-50">
+                                <Link to={`/receipts/${row.receipt_id}`} onClick={() => setSheet(null)} className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium">{row.restaurant_name ?? 'Receipt'}</p>
+                                  <p className="text-xs text-gray-400">{formatDate(row.date)}</p>
+                                  {sheet.balance.pair_member_ids && <p className="text-xs font-medium text-gray-500">{getMemberName(row.peer_user_id ?? sheet.balance.peer_user_id)}</p>}
+                                </Link>
+                                <button onClick={() => { setCopyToast(`$${row.amount.toFixed(2)} copied`); setTimeout(() => setCopyToast(''), 1500); navigator.clipboard?.writeText(row.amount.toFixed(2)).catch(() => {}); }} className="font-semibold text-sm text-red-500 ml-2 flex-shrink-0 active:opacity-60">-{formatMoney(row.amount)}</button>
+                              </div>
+                            </SwipeRow>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

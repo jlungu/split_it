@@ -18,8 +18,13 @@ app.use(
   cors({
     origin: (origin) => {
       const allowed = (process.env.CORS_ORIGIN ?? 'http://localhost:5173').split(',').map(s => s.trim());
-      // Allow any local network origin in dev
-      if (!origin || allowed.includes(origin) || /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin)) {
+      // Allow explicitly listed origins, local network in dev, and any Vercel preview URL
+      if (
+        !origin ||
+        allowed.includes(origin) ||
+        /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin) ||
+        /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin)
+      ) {
         return origin ?? '*';
       }
       return null;
