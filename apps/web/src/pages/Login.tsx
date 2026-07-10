@@ -84,12 +84,15 @@ export default function Login() {
     }
     try {
       await getMe();
-    } catch {
-      await supabase.auth.signOut();
-      setLoading(false);
-      goToEmail();
-      setError('This email is not authorized to access Split It.');
-      return;
+    } catch (err) {
+      if ((err as Error).message === 'Unauthorized') {
+        await supabase.auth.signOut();
+        setLoading(false);
+        goToEmail();
+        setError('This email is not authorized to access Split It.');
+        return;
+      }
+      // Non-auth errors (network, server) — let the user in anyway
     }
     persistStep('email', '');
     setLoading(false);

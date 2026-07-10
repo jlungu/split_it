@@ -76,14 +76,25 @@ router.get('/me', async (c) => {
   const auth = await requireAuthWithEmail(c);
   if (!auth) return c.json({ error: 'Unauthorized' }, 401);
 
-  const { data, error } = await supabase
-    .from('users')
-    .upsert({ id: auth.userId, email: auth.email, is_registered: true }, { onConflict: 'id' })
-    .select('id, email, display_name, venmo_handle, zelle_contact, is_registered')
-    .single();
+  const cols = 'id, email, display_name, venmo_handle, zelle_contact, is_registered';
 
+  // Try to find by auth user id
+  const { data: existing } = await supabase
+    .from('users').select(cols).eq('id', auth.userId).single();
+  if (existing) return c.json({ user: existing as User });
+
+  // Try to find by email (placeholder created before they signed up)
+  const { data: byEmail } = await supabase
+    .from('users').select(cols).eq('email', auth.email).single();
+  if (byEmail) return c.json({ user: byEmail as User });
+
+  // Brand new user — create them
+  const { data: created, error } = await supabase
+    .from('users')
+    .insert({ id: auth.userId, email: auth.email, is_registered: true })
+    .select(cols).single();
   if (error) return c.json({ error: error.message }, 500);
-  return c.json({ user: data as User });
+  return c.json({ user: created as User });
 });
 
 // Update the authenticated user's profile
