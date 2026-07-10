@@ -5,21 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsup",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.54.0",
+    "@hono/node-server": "^1.14.3",
     "@split-it/types": "*",
     "@supabase/supabase-js": "^2.49.8",
     "dotenv": "^16.5.0",
     "hono": "^4.8.3",
-    "serve-static": "^2.2.0",
-    "@hono/node-server": "^1.14.3"
+    "serve-static": "^2.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",
+    "tsup": "^8.5.1",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }
