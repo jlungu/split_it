@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Hono } from 'hono';
 import type { User } from '@split-it/types';
-import { requireAuth } from '../lib/auth.js';
+import { requireAuth, requireAuthWithEmail } from '../lib/auth.js';
 import { supabase } from '../lib/supabase.js';
 
 const router = new Hono();
@@ -73,13 +73,13 @@ router.post('/guest', async (c) => {
 
 // Get the authenticated user's profile
 router.get('/me', async (c) => {
-  const userId = await requireAuth(c);
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401);
+  const auth = await requireAuthWithEmail(c);
+  if (!auth) return c.json({ error: 'Unauthorized' }, 401);
 
   const { data, error } = await supabase
     .from('users')
+    .upsert({ id: auth.userId, email: auth.email, is_registered: true }, { onConflict: 'id' })
     .select('id, email, display_name, venmo_handle, zelle_contact, is_registered')
-    .eq('id', userId)
     .single();
 
   if (error) return c.json({ error: error.message }, 500);
