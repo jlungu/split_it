@@ -1,11 +1,2 @@
 [phases.setup]
 nixPkgs = ["nodejs_20"]
-
-[phases.install]
-cmds = ["npm ci --cache /tmp/.npm"]
-
-[phases.build]
-cmds = ["npm run build -w packages/types && npm run build -w apps/api"]
-
-[start]
-cmd = "node apps/api/dist/index.js"
