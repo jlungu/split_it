@@ -162,9 +162,9 @@ function mergeBalancesWithPairs(
       const b = result[presentIdx];
       const presentName = b.peer_display_name ?? b.peer_email.split('@')[0];
       const absentName = memberName(absentUid);
-      const displayName = presentUid === uid1
-        ? `${presentName} & ${absentName}`
-        : `${absentName} & ${presentName}`;
+      const displayName = absentUid === meId
+        ? presentName
+        : (presentUid === uid1 ? `${presentName} & ${absentName}` : `${absentName} & ${presentName}`);
       result[presentIdx] = { ...b, peer_display_name: displayName, pair_member_ids: [uid1, uid2] };
     }
     // Neither has a balance — pair stored but nothing to show yet

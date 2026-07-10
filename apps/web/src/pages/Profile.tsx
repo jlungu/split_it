@@ -73,7 +73,7 @@ export default function Profile() {
         <h1 className="font-semibold">Profile</h1>
       </div>
 
-      <div className="px-4 pt-6">
+      <div className="px-4 pt-6 pb-28">
         <div className="card mb-4">
           <p className="text-xs text-gray-400 mb-1">Email</p>
           <p className="text-sm font-medium">{user?.email}</p>

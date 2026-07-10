@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
 import { useAuthStore } from './store/auth';
 import Login from './pages/Login';
 import Home from './pages/Home';
@@ -9,6 +10,12 @@ import GroupDetail from './pages/GroupDetail';
 import NavBar from './components/NavBar';
 
 const NAV_ROUTES = ['/', '/profile'];
+
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  return null;
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuthStore();
@@ -31,6 +38,7 @@ function Layout({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
+      <ScrollToTop />
       <Layout>
         <Routes>
           <Route path="/login" element={<Login />} />

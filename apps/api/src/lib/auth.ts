@@ -14,5 +14,12 @@ export async function requireAuth(c: Context): Promise<string | null> {
 
   const { data, error } = await client.auth.getUser(token);
   if (error || !data.user) return null;
+
+  const allowlist = process.env.ALLOWED_EMAILS;
+  if (allowlist) {
+    const allowed = allowlist.split(',').map((e) => e.trim().toLowerCase());
+    if (!allowed.includes(data.user.email?.toLowerCase() ?? '')) return null;
+  }
+
   return data.user.id;
 }

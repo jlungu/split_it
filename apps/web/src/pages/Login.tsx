@@ -2,19 +2,44 @@ import { useState, useRef } from 'react';
 import { Navigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/auth';
+import { getMe } from '../lib/api';
 
 type Step = 'email' | 'pin';
 
+const PIN_LENGTH = 8;
+const EMPTY_PIN = Array(PIN_LENGTH).fill('');
+
+function persistStep(step: Step, email: string) {
+  if (step === 'pin') {
+    sessionStorage.setItem('login-step', 'pin');
+    sessionStorage.setItem('login-email', email);
+  } else {
+    sessionStorage.removeItem('login-step');
+    sessionStorage.removeItem('login-email');
+  }
+}
+
 export default function Login() {
   const { session } = useAuthStore();
-  const [step, setStep] = useState<Step>('email');
-  const [email, setEmail] = useState('');
-  const [pin, setPin] = useState(['', '', '', '', '', '']);
+  const [step, setStep] = useState<Step>(() =>
+    (sessionStorage.getItem('login-step') as Step) ?? 'email'
+  );
+  const [email, setEmail] = useState(() =>
+    sessionStorage.getItem('login-email') ?? ''
+  );
+  const [pin, setPin] = useState<string[]>(EMPTY_PIN);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const pinRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   if (session) return <Navigate to="/" replace />;
+
+  function goToEmail() {
+    setStep('email');
+    setPin(EMPTY_PIN);
+    setError('');
+    persistStep('email', '');
+  }
 
   async function devLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -38,6 +63,7 @@ export default function Login() {
     });
     setLoading(false);
     if (err) { setError(err.message); return; }
+    persistStep('pin', email.trim().toLowerCase());
     setStep('pin');
     setTimeout(() => pinRefs.current[0]?.focus(), 100);
   }
@@ -45,12 +71,28 @@ export default function Login() {
   async function verifyPin(e: React.FormEvent) {
     e.preventDefault();
     const token = pin.join('');
-    if (token.length !== 6) { setError('Enter all 6 digits'); return; }
+    if (token.length !== PIN_LENGTH) { setError(`Enter all ${PIN_LENGTH} digits`); return; }
     setError('');
     setLoading(true);
     const { error: err } = await supabase.auth.verifyOtp({ email: email.trim().toLowerCase(), token, type: 'email' });
+    if (err) {
+      setLoading(false);
+      setError('Invalid or expired code — try again');
+      setPin(EMPTY_PIN);
+      pinRefs.current[0]?.focus();
+      return;
+    }
+    try {
+      await getMe();
+    } catch {
+      await supabase.auth.signOut();
+      setLoading(false);
+      goToEmail();
+      setError('This email is not authorized to access Split It.');
+      return;
+    }
+    persistStep('email', '');
     setLoading(false);
-    if (err) { setError('Invalid or expired code — try again'); setPin(['', '', '', '', '', '']); pinRefs.current[0]?.focus(); }
   }
 
   function handlePinChange(index: number, value: string) {
@@ -58,7 +100,7 @@ export default function Login() {
     const next = [...pin];
     next[index] = value.slice(-1);
     setPin(next);
-    if (value && index < 5) pinRefs.current[index + 1]?.focus();
+    if (value && index < PIN_LENGTH - 1) pinRefs.current[index + 1]?.focus();
   }
 
   function handlePinKeyDown(index: number, e: React.KeyboardEvent) {
@@ -68,10 +110,10 @@ export default function Login() {
   }
 
   function handlePinPaste(e: React.ClipboardEvent) {
-    const text = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
-    if (text.length === 6) {
+    const text = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, PIN_LENGTH);
+    if (text.length === PIN_LENGTH) {
       setPin(text.split(''));
-      pinRefs.current[5]?.focus();
+      pinRefs.current[PIN_LENGTH - 1]?.focus();
     }
   }
 
@@ -128,15 +170,15 @@ export default function Login() {
           <form onSubmit={verifyPin} className="space-y-6">
             <div className="text-center">
               <p className="text-sm text-gray-500">
-                We sent a 6-digit code to <span className="font-medium text-gray-900">{email}</span>
+                We sent an {PIN_LENGTH}-digit code to <span className="font-medium text-gray-900">{email}</span>
               </p>
             </div>
-            <div className="flex gap-2 justify-center" onPaste={handlePinPaste}>
+            <div className="flex gap-1.5 justify-center" onPaste={handlePinPaste}>
               {pin.map((d, i) => (
                 <input
                   key={i}
                   ref={(el) => { pinRefs.current[i] = el; }}
-                  className="w-11 h-14 text-center text-xl font-bold border-2 border-gray-200 rounded-xl
+                  className="w-10 h-14 text-center text-xl font-bold border-2 border-gray-200 rounded-xl
                     focus:border-brand-500 focus:outline-none focus:ring-0 transition"
                   type="text"
                   inputMode="numeric"
@@ -148,14 +190,10 @@ export default function Login() {
               ))}
             </div>
             {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-            <button className="btn-primary" type="submit" disabled={loading || pin.join('').length !== 6}>
+            <button className="btn-primary" type="submit" disabled={loading || pin.join('').length !== PIN_LENGTH}>
               {loading ? 'Verifying…' : 'Verify'}
             </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => { setStep('email'); setPin(['', '', '', '', '', '']); setError(''); }}
-            >
+            <button type="button" className="btn-secondary" onClick={goToEmail}>
               Use different email
             </button>
           </form>
