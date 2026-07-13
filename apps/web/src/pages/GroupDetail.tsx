@@ -292,6 +292,159 @@ interface BreakdownSheet {
   loading: boolean;
 }
 
+function stripEmojis(str: string) {
+  return str.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim();
+}
+
+function generateGroupShareImage(
+  name: string,
+  rawBalances: BalanceSummary[],
+  pairs: GroupPair[],
+  getMemberName: (uid: string) => string,
+): { blob: Blob; dataUrl: string } {
+  const SCALE = 2;
+  const W = 260;
+  const PAD = 16;
+  const MONO = 'monospace';
+  const HEADER_H = 64;
+  const DIVPAD = 23;
+  const DIVPAD_SM = 20;
+  const NAME_LS = 18;
+  const PERSON_GAP = 6;
+  const SUBTOTAL_LS = 16;
+  const GROUP_SEP_H = 18;
+
+  type DrawRow =
+    | { kind: 'person'; name: string; net: number }
+    | { kind: 'subtotal'; label: string; net: number };
+
+  const getName = (b: BalanceSummary) => b.peer_display_name ?? b.peer_email.split('@')[0];
+  // Only include people who owe the user
+  const activeBalances = rawBalances.filter(b => b.they_owe > 0);
+
+  const drawRows: DrawRow[] = [];
+  const emittedPairs = new Set<string>();
+
+  for (const b of activeBalances) {
+    const pair = pairs.find(p => p.user_id_1 === b.peer_user_id || p.user_id_2 === b.peer_user_id);
+    if (!pair) {
+      drawRows.push({ kind: 'person', name: getName(b), net: b.they_owe });
+    } else if (!emittedPairs.has(pair.id)) {
+      emittedPairs.add(pair.id);
+      const b1 = rawBalances.find(x => x.peer_user_id === pair.user_id_1);
+      const b2 = rawBalances.find(x => x.peer_user_id === pair.user_id_2);
+      if (b1 && b1.they_owe > 0) drawRows.push({ kind: 'person', name: getName(b1), net: b1.they_owe });
+      if (b2 && b2.they_owe > 0) drawRows.push({ kind: 'person', name: getName(b2), net: b2.they_owe });
+      if (b1 && b2 && b1.they_owe > 0 && b2.they_owe > 0) {
+        drawRows.push({
+          kind: 'subtotal',
+          label: `${getName(b1)} & ${getName(b2)}`,
+          net: b1.they_owe + b2.they_owe,
+        });
+      }
+    }
+  }
+
+  const rowsH = drawRows.reduce((sum, r, i) => {
+    const rowH = r.kind === 'person' ? NAME_LS : SUBTOTAL_LS;
+    const isLast = i === drawRows.length - 1;
+    const gap = isLast ? 0 : (r.kind === 'subtotal' ? GROUP_SEP_H : PERSON_GAP);
+    return sum + rowH + gap;
+  }, 0);
+
+  const H = HEADER_H + 2 * DIVPAD + DIVPAD_SM + rowsH + NAME_LS + 10;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W * SCALE;
+  canvas.height = H * SCALE;
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(SCALE, SCALE);
+  ctx.direction = 'ltr';
+  ctx.textAlign = 'left';
+
+  ctx.fillStyle = '#fffef9';
+  ctx.fillRect(0, 0, W, H);
+
+  let y = 0;
+
+  function drawDivider() {
+    ctx.save();
+    ctx.strokeStyle = '#b8b8a8';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(PAD, y);
+    ctx.lineTo(W - PAD, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCentered(text: string, iy: number) {
+    const w = ctx.measureText(text).width;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, (W - w) / 2, iy);
+  }
+
+  ctx.fillStyle = '#1a1a14';
+  ctx.font = `bold 16px ${MONO}`;
+  drawCentered((stripEmojis(name) || 'TRIP').toUpperCase(), HEADER_H / 2 + 6);
+
+  y = HEADER_H;
+  drawDivider();
+  y += DIVPAD;
+
+  drawRows.forEach((row, i) => {
+    if (row.kind === 'person') {
+      const label = row.name.length > 13 ? row.name.slice(0, 12) + '…' : row.name;
+      ctx.fillStyle = '#1a1a14';
+      ctx.font = `12px ${MONO}`;
+      ctx.textAlign = 'left';
+      ctx.fillText(label, PAD, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(formatMoney(row.net), W - PAD, y);
+      y += NAME_LS;
+    } else {
+      const label = row.label.length > 15 ? row.label.slice(0, 14) + '…' : row.label;
+      ctx.fillStyle = '#6b7280';
+      ctx.font = `600 12px ${MONO}`;
+      ctx.textAlign = 'left';
+      ctx.fillText(label, PAD, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(formatMoney(row.net), W - PAD, y);
+      y += SUBTOTAL_LS;
+    }
+    if (i < drawRows.length - 1) {
+      y += row.kind === 'subtotal' ? GROUP_SEP_H : PERSON_GAP;
+    }
+  });
+
+  drawDivider();
+  y += DIVPAD;
+
+  const total = activeBalances.reduce((sum, b) => sum + b.they_owe, 0);
+  ctx.fillStyle = '#1a1a14';
+  ctx.font = `bold 12px ${MONO}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('TOTAL', PAD, y);
+  ctx.textAlign = 'right';
+  ctx.fillText(formatMoney(total), W - PAD, y);
+  y += NAME_LS;
+
+  drawDivider();
+  y += DIVPAD_SM;
+
+  ctx.fillStyle = '#78786a';
+  ctx.font = `9px ${MONO}`;
+  drawCentered('SPLIT IT', y);
+
+  const dataUrl = canvas.toDataURL('image/png');
+  const byteStr = atob(dataUrl.split(',')[1]);
+  const arr = new Uint8Array(byteStr.length);
+  for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i);
+  return { blob: new Blob([arr], { type: 'image/png' }), dataUrl };
+}
+
+
 export default function GroupDetail() {
   const { id: groupId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -311,6 +464,7 @@ export default function GroupDetail() {
   const [loading, setLoading] = useState(true);
   const [balancesLoading, setBalancesLoading] = useState(true);
   const [receiptsLoading, setReceiptsLoading] = useState(true);
+  const [shareDataUrl, setShareDataUrl] = useState<string | null>(null);
 
   // Bottom sheet state (same as Home)
   const [sheet, setSheet] = useState<BreakdownSheet | null>(null);
@@ -625,6 +779,17 @@ export default function GroupDetail() {
     return m ? (m.user?.display_name ?? m.user?.email?.split('@')[0] ?? '?') : '?';
   };
 
+  function handleGroupShare() {
+    const { blob, dataUrl } = generateGroupShareImage(groupName, balances, pairs, getMemberName);
+    const file = new File([blob], 'split.png', { type: 'image/png' });
+    if (navigator.share) {
+      navigator.share({ files: [file], title: `Split It: ${stripEmojis(groupName)}` })
+        .catch((err) => { if (err.name !== 'AbortError') setShareDataUrl(dataUrl); });
+    } else {
+      setShareDataUrl(dataUrl);
+    }
+  }
+
   const totalTheyOwe = balances.reduce((sum, b) => sum + b.they_owe, 0);
   const totalIOwe = balances.reduce((sum, b) => sum + b.you_owe, 0);
   const net = totalTheyOwe - totalIOwe;
@@ -689,7 +854,15 @@ export default function GroupDetail() {
             <div className="space-y-2"><Skeleton className="h-4 w-24 mb-3" /><Skeleton className="h-16 w-full" /></div>
           ) : mergedBalances.length > 0 && (
             <>
-              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3 px-1">Balances</h2>
+              <div className="flex items-center justify-between mb-3 px-1">
+                <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Balances</h2>
+                <button onClick={handleGroupShare} className="flex items-center gap-1 text-xs font-medium text-brand-600">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                  </svg>
+                  Share
+                </button>
+              </div>
               <div className="space-y-2">
                 {mergedBalances.map((b) => (
                   <SwipeRow
@@ -1080,6 +1253,14 @@ export default function GroupDetail() {
           <div className="bg-gray-900 text-white text-sm font-semibold px-5 py-3 rounded-2xl shadow-2xl">
             {copyToast}
           </div>
+        </div>
+      )}
+
+      {shareDataUrl && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center gap-4 px-4" onClick={() => setShareDataUrl(null)}>
+          <p className="text-white text-sm font-medium">Press and hold to share</p>
+          <img src={shareDataUrl} alt="Trip split" className="w-52 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+          <button className="text-white/60 text-sm mt-2" onClick={() => setShareDataUrl(null)}>Close</button>
         </div>
       )}
     </div>
