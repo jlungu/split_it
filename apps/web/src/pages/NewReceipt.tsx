@@ -171,8 +171,14 @@ export default function NewReceipt() {
   }, []);
 
   useEffect(() => {
-    const file = (location.state as { file?: File } | null)?.file;
-    if (file) handleImageFile(file);
+    const state = location.state as { file?: File; manual?: boolean } | null;
+    if (state?.file) {
+      handleImageFile(state.file);
+    } else if (state?.manual) {
+      setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), tax: null, tip: null, total: null });
+      setItems([{ id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
+      setStep('edit');
+    }
   }, []);
 
   async function handleImageFile(file: File) {
