@@ -336,6 +336,21 @@ export default function NewReceipt() {
                 className="hidden"
                 onChange={(e) => { if (e.target.files?.[0]) handleImageFile(e.target.files[0]); }}
               />
+              <div className="flex items-center gap-3 w-full">
+                <div className="flex-1 h-px bg-gray-200" />
+                <span className="text-xs text-gray-400 font-medium">or</span>
+                <div className="flex-1 h-px bg-gray-200" />
+              </div>
+              <button
+                onClick={() => {
+                  setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), tax: null, tip: null, total: null });
+                  setItems([{ id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
+                  setStep('edit');
+                }}
+                className="btn-secondary"
+              >
+                ✏️ Enter manually
+              </button>
               {ocrError && <p className="text-red-500 text-sm text-center">{ocrError}</p>}
             </>
           )}
@@ -346,14 +361,25 @@ export default function NewReceipt() {
       {step === 'edit' && (
         <div className="px-4 pt-4 space-y-4">
           <div className="card space-y-3">
-            <div>
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Restaurant</label>
-              <input
-                className="input mt-1"
-                value={meta.restaurant_name ?? ''}
-                onChange={(e) => setMeta({ ...meta, restaurant_name: e.target.value || null })}
-                placeholder="Restaurant name"
-              />
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Restaurant</label>
+                <input
+                  className="input mt-1"
+                  value={meta.restaurant_name ?? ''}
+                  onChange={(e) => setMeta({ ...meta, restaurant_name: e.target.value || null })}
+                  placeholder="Restaurant name"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Date</label>
+                <input
+                  className="input mt-1"
+                  type="date"
+                  value={meta.date ?? ''}
+                  onChange={(e) => setMeta({ ...meta, date: e.target.value || null })}
+                />
+              </div>
             </div>
             <div className="flex gap-3">
               <div className="flex-1">
