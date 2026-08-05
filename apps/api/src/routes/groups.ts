@@ -25,99 +25,77 @@ async function computeBalancesForReceipts(userId: string, receiptIds: string[]):
   const iOwe = new Map<string, number>();
   if (!receiptIds.length) return { owedToMe, iOwe };
 
-  const { data: ownedReceipts } = await supabase
-    .from('receipts')
-    .select('id, subtotal, tax, tip')
-    .eq('owner_id', userId)
-    .in('id', receiptIds);
-
-  const ownedIds = (ownedReceipts ?? []).map((r) => r.id);
-
-  if (ownedIds.length) {
-    const { data: lis } = await supabase
-      .from('line_items')
-      .select('id, receipt_id')
-      .in('receipt_id', ownedIds);
-
-    const liMap = new Map<string, string>();
-    for (const li of lis ?? []) liMap.set(li.id, li.receipt_id);
-
-    if (liMap.size) {
-      const { data: asgn } = await supabase
-        .from('assignments')
-        .select('user_id, line_item_id, computed_amount')
-        .in('line_item_id', [...liMap.keys()])
-        .neq('user_id', userId);
-
-      const itemsByUserReceipt = new Map<string, Map<string, number>>();
-      for (const a of asgn ?? []) {
-        const rid = liMap.get(a.line_item_id);
-        if (!rid) continue;
-        if (!itemsByUserReceipt.has(a.user_id)) itemsByUserReceipt.set(a.user_id, new Map());
-        const byR = itemsByUserReceipt.get(a.user_id)!;
-        byR.set(rid, (byR.get(rid) ?? 0) + a.computed_amount);
-      }
-
-      for (const [uid, byR] of itemsByUserReceipt) {
-        let total = 0;
-        for (const [rid, itemAmt] of byR) {
-          const r = (ownedReceipts ?? []).find((x) => x.id === rid);
-          if (!r) continue;
-          const overhead = (r.tax ?? 0) + (r.tip ?? 0);
-          const sub = r.subtotal ?? 0;
-          const taxShare = sub > 0 ? Number(((itemAmt / sub) * overhead).toFixed(2)) : 0;
-          total += Number((itemAmt + taxShare).toFixed(2));
-        }
-        owedToMe.set(uid, (owedToMe.get(uid) ?? 0) + total);
-      }
-    }
-  }
-
-  const otherReceiptIds = receiptIds.filter((id) => !ownedIds.includes(id));
-  if (otherReceiptIds.length) {
-    const { data: otherReceipts } = await supabase
-      .from('receipts')
-      .select('id, owner_id, subtotal, tax, tip')
-      .in('id', otherReceiptIds);
-
-    const { data: lis } = await supabase
-      .from('line_items')
-      .select('id, receipt_id')
-      .in('receipt_id', otherReceiptIds);
-
-    const liMap = new Map<string, string>();
-    for (const li of lis ?? []) liMap.set(li.id, li.receipt_id);
-
-    if (liMap.size) {
-      const { data: asgn } = await supabase
-        .from('assignments')
-        .select('line_item_id, computed_amount')
-        .in('line_item_id', [...liMap.keys()])
-        .eq('user_id', userId);
-
-      const byReceipt = new Map<string, number>();
-      for (const a of asgn ?? []) {
-        const rid = liMap.get(a.line_item_id);
-        if (rid) byReceipt.set(rid, (byReceipt.get(rid) ?? 0) + a.computed_amount);
-      }
-
-      for (const [rid, itemAmt] of byReceipt) {
-        const r = (otherReceipts ?? []).find((x) => x.id === rid);
-        if (!r) continue;
-        const overhead = (r.tax ?? 0) + (r.tip ?? 0);
-        const sub = r.subtotal ?? 0;
-        const taxShare = sub > 0 ? Number(((itemAmt / sub) * overhead).toFixed(2)) : 0;
-        iOwe.set(r.owner_id, (iOwe.get(r.owner_id) ?? 0) + Number((itemAmt + taxShare).toFixed(2)));
-      }
-    }
-  }
-
-  // Subtract settlements scoped to these receipts
-  const [{ data: sFrom }, { data: sTo }] = await Promise.all([
+  // Layer 1: fetch receipt details + settlements in parallel (all depend only on receiptIds)
+  const [{ data: allReceipts }, { data: sFrom }, { data: sTo }] = await Promise.all([
+    supabase.from('receipts').select('id, owner_id, subtotal, tax, tip').in('id', receiptIds),
     supabase.from('settlements').select('to_user_id, amount').eq('from_user_id', userId).in('receipt_id', receiptIds).not('paid_at', 'is', null),
     supabase.from('settlements').select('from_user_id, amount').eq('to_user_id', userId).in('receipt_id', receiptIds).not('paid_at', 'is', null),
   ]);
 
+  const ownedIds = (allReceipts ?? []).filter((r) => r.owner_id === userId).map((r) => r.id);
+  const otherIds = (allReceipts ?? []).filter((r) => r.owner_id !== userId).map((r) => r.id);
+
+  // Layer 2: fetch line items for both sides in parallel
+  const [{ data: ownedLis }, { data: otherLis }] = await Promise.all([
+    ownedIds.length
+      ? supabase.from('line_items').select('id, receipt_id').in('receipt_id', ownedIds)
+      : Promise.resolve({ data: [] as { id: string; receipt_id: string }[] }),
+    otherIds.length
+      ? supabase.from('line_items').select('id, receipt_id').in('receipt_id', otherIds)
+      : Promise.resolve({ data: [] as { id: string; receipt_id: string }[] }),
+  ]);
+
+  const ownedLiMap = new Map<string, string>();
+  for (const li of ownedLis ?? []) ownedLiMap.set(li.id, li.receipt_id);
+  const otherLiMap = new Map<string, string>();
+  for (const li of otherLis ?? []) otherLiMap.set(li.id, li.receipt_id);
+
+  // Layer 3: fetch assignments for both sides in parallel
+  const [{ data: ownedAsgn }, { data: otherAsgn }] = await Promise.all([
+    ownedLiMap.size
+      ? supabase.from('assignments').select('user_id, line_item_id, computed_amount').in('line_item_id', [...ownedLiMap.keys()]).neq('user_id', userId)
+      : Promise.resolve({ data: [] as { user_id: string; line_item_id: string; computed_amount: number }[] }),
+    otherLiMap.size
+      ? supabase.from('assignments').select('line_item_id, computed_amount').in('line_item_id', [...otherLiMap.keys()]).eq('user_id', userId)
+      : Promise.resolve({ data: [] as { line_item_id: string; computed_amount: number }[] }),
+  ]);
+
+  // Compute owedToMe (others owe me on receipts I own)
+  const itemsByUserReceipt = new Map<string, Map<string, number>>();
+  for (const a of ownedAsgn ?? []) {
+    const rid = ownedLiMap.get(a.line_item_id);
+    if (!rid) continue;
+    if (!itemsByUserReceipt.has(a.user_id)) itemsByUserReceipt.set(a.user_id, new Map());
+    const byR = itemsByUserReceipt.get(a.user_id)!;
+    byR.set(rid, (byR.get(rid) ?? 0) + a.computed_amount);
+  }
+  for (const [uid, byR] of itemsByUserReceipt) {
+    let total = 0;
+    for (const [rid, itemAmt] of byR) {
+      const r = (allReceipts ?? []).find((x) => x.id === rid);
+      if (!r) continue;
+      const sub = r.subtotal ?? 0;
+      const taxShare = sub > 0 ? Number(((itemAmt / sub) * ((r.tax ?? 0) + (r.tip ?? 0))).toFixed(2)) : 0;
+      total += Number((itemAmt + taxShare).toFixed(2));
+    }
+    owedToMe.set(uid, (owedToMe.get(uid) ?? 0) + total);
+  }
+
+  // Compute iOwe (I owe owners on receipts I'm assigned to but don't own)
+  const byReceipt = new Map<string, number>();
+  for (const a of otherAsgn ?? []) {
+    const rid = otherLiMap.get(a.line_item_id);
+    if (rid) byReceipt.set(rid, (byReceipt.get(rid) ?? 0) + a.computed_amount);
+  }
+  for (const [rid, itemAmt] of byReceipt) {
+    const r = (allReceipts ?? []).find((x) => x.id === rid);
+    if (!r) continue;
+    const sub = r.subtotal ?? 0;
+    const taxShare = sub > 0 ? Number(((itemAmt / sub) * ((r.tax ?? 0) + (r.tip ?? 0))).toFixed(2)) : 0;
+    iOwe.set(r.owner_id, (iOwe.get(r.owner_id) ?? 0) + Number((itemAmt + taxShare).toFixed(2)));
+  }
+
+  // Apply settlements
   for (const s of sFrom ?? []) iOwe.set(s.to_user_id, Math.max(0, (iOwe.get(s.to_user_id) ?? 0) - s.amount));
   for (const s of sTo ?? []) owedToMe.set(s.from_user_id, Math.max(0, (owedToMe.get(s.from_user_id) ?? 0) - s.amount));
 

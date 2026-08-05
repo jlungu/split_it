@@ -298,9 +298,9 @@ export default function NewReceipt() {
 
       {/* Step: Capture */}
       {step === 'capture' && (
-        <div className="px-6 pt-12 flex flex-col items-center gap-6">
+        <div className="px-6 pt-8 flex flex-col items-center gap-4">
           {ocrLoading ? (
-            <div className="text-center">
+            <div className="text-center pt-12">
               <div className="text-4xl mb-4">🔍</div>
               <p className="text-gray-600 font-medium">Reading receipt…</p>
               <p className="text-gray-400 text-sm mt-1">This takes a few seconds</p>
@@ -309,10 +309,10 @@ export default function NewReceipt() {
             <>
               <button
                 onClick={() => cameraRef.current?.click()}
-                className="w-full h-48 border-2 border-dashed border-brand-300 rounded-2xl flex flex-col
-                  items-center justify-center gap-3 text-brand-500 bg-brand-50 active:bg-brand-100 transition"
+                className="w-full h-36 border-2 border-dashed border-brand-300 rounded-2xl flex flex-col
+                  items-center justify-center gap-2 text-brand-500 bg-brand-50 active:bg-brand-100 transition"
               >
-                <span className="text-4xl">📷</span>
+                <span className="text-3xl">📷</span>
                 <span className="font-medium">Take a photo</span>
               </button>
               <input
