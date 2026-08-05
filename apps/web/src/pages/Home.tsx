@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { getBalances, listReceipts, getBalanceBreakdown, settle, getMe, listGroups, createGroup, type BreakdownRow } from '../lib/api';
+import { getBalances, listReceipts, getBalanceBreakdown, settle, getMe, listGroups, createGroup, getGroup, getGroupBalances, listGroupReceipts, getGroupMySpend, getGroupPairs, type BreakdownRow } from '../lib/api';
 import type { BalanceSummary, GroupSummary, Receipt, User } from '@split-it/types';
 
 function formatMoney(n: number) {
@@ -252,7 +252,17 @@ export default function Home() {
       .finally(() => setReceiptsLoading(false));
 
     listGroups()
-      .then(({ groups: g }) => setGroups(g))
+      .then(({ groups: g }) => {
+        setGroups(g);
+        // preload each group's detail page data in the background
+        for (const grp of g) {
+          getGroup(grp.id).catch(() => {});
+          getGroupBalances(grp.id).catch(() => {});
+          listGroupReceipts(grp.id).catch(() => {});
+          getGroupMySpend(grp.id).catch(() => {});
+          getGroupPairs(grp.id).catch(() => {});
+        }
+      })
       .catch(() => {})
       .finally(() => setGroupsLoading(false));
   }, []);
