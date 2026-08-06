@@ -532,16 +532,24 @@ export default function ReceiptDetail() {
           </div>
         ))}
         {me?.id === receipt.owner_id && (
-          <button
-            className="w-full py-3 text-sm font-medium text-red-500 rounded-2xl border border-red-100 bg-red-50 active:bg-red-100 transition-colors mt-2"
-            onClick={async () => {
-              if (!confirm('Delete this receipt? This cannot be undone.')) return;
-              await deleteReceipt(id!);
-              navigate('/', { replace: true });
-            }}
-          >
-            Delete Receipt
-          </button>
+          <div className="flex flex-col gap-2 mt-2">
+            <button
+              className="w-full py-3 text-sm font-medium text-brand-600 rounded-2xl border border-brand-100 bg-brand-50 active:bg-brand-100 transition-colors"
+              onClick={() => navigate('/receipts/new', { state: { editReceipt: receipt } })}
+            >
+              Edit Receipt
+            </button>
+            <button
+              className="w-full py-3 text-sm font-medium text-red-500 rounded-2xl border border-red-100 bg-red-50 active:bg-red-100 transition-colors"
+              onClick={async () => {
+                if (!confirm('Delete this receipt? This cannot be undone.')) return;
+                await deleteReceipt(id!);
+                navigate('/', { replace: true });
+              }}
+            >
+              Delete Receipt
+            </button>
+          </div>
         )}
       </div>
 

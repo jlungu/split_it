@@ -93,6 +93,13 @@ export const updateReceipt = async (id: string, patch: Partial<Receipt>) => {
   return result;
 };
 
+export const updateReceiptFull = async (id: string, body: object) => {
+  const result = await request<{ ok: boolean }>(`/api/receipts/${id}/full`, { method: 'PUT', body: JSON.stringify(body) });
+  apiCache.invalidate('receipts', `receipt:${id}`, `split:${id}`, 'balances', 'groups');
+  apiCache.invalidatePrefix('group:');
+  return result;
+};
+
 export const deleteReceipt = async (id: string) => {
   const result = await request<{ ok: boolean }>(`/api/receipts/${id}`, { method: 'DELETE' });
   apiCache.invalidate('receipts', `receipt:${id}`, `split:${id}`, 'balances', 'groups');

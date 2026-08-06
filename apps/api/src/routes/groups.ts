@@ -318,12 +318,16 @@ router.get('/:id/receipts', async (c) => {
 
   const { data: receipts, error } = await supabase
     .from('receipts')
-    .select('id, owner_id, restaurant_name, date, subtotal, tax, tip, total, group_id, created_at')
+    .select('id, owner_id, restaurant_name, date, subtotal, tax, tip, total, group_id, created_at, owner:users!owner_id(display_name, email)')
     .eq('group_id', groupId)
     .order('date', { ascending: false });
 
   if (error) return c.json({ error: error.message }, 500);
-  return c.json({ receipts: receipts ?? [] });
+  const mapped = (receipts ?? []).map((r: any) => {
+    const { owner, ...rest } = r;
+    return { ...rest, owner_name: owner?.display_name ?? owner?.email ?? null };
+  });
+  return c.json({ receipts: mapped });
 });
 
 // Balances scoped to a group (same structure as /api/splits/balances)

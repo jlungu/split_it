@@ -581,7 +581,10 @@ export default function Home() {
                     <p className="font-medium text-sm">{r.restaurant_name ?? 'Receipt'}</p>
                     <p className="text-xs text-gray-400">{formatDate(r.date)}</p>
                   </div>
-                  <p className="font-semibold text-sm">{r.total != null ? formatMoney(r.total) : '—'}</p>
+                  <div className="text-right">
+                    <p className="font-semibold text-sm">{r.total != null ? formatMoney(r.total) : '—'}</p>
+                    <p className="text-xs text-gray-400">Paid by {r.owner_id === me?.id ? 'Me' : (r.owner_name ?? 'them')}</p>
+                  </div>
                 </Link>
               ))}
             </div>

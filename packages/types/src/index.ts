@@ -20,6 +20,7 @@ export interface Receipt {
   total: number | null;
   group_id?: string | null;
   created_at?: string;
+  owner_name?: string | null;
 }
 
 export interface LineItem {

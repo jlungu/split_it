@@ -47,24 +47,27 @@ export default function NavBar() {
 
       {/* Submenu */}
       {menuOpen && (
-        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-30 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-30 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden"
+          style={{ bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px))' }}
+        >
           <div className="px-4 py-2.5 border-b border-gray-100">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Add Receipt</p>
           </div>
           <button
-            className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-gray-800 active:bg-gray-50"
+            className="w-full px-4 py-3 text-sm font-medium text-gray-800 text-left active:bg-gray-50"
             onClick={() => { fileRef.current?.click(); }}
           >
-            <span className="text-lg">📷</span> From Photo
+            📷 From Photo
           </button>
           <button
-            className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-gray-800 active:bg-gray-50 border-t border-gray-100"
+            className="w-full px-4 py-3 text-sm font-medium text-gray-800 text-left active:bg-gray-50 border-t border-gray-100"
             onClick={() => {
               setMenuOpen(false);
               navigate('/receipts/new', { state: { manual: true } });
             }}
           >
-            <span className="text-lg">✏️</span> Manually
+            ✏️ Enter Manually
           </button>
         </div>
       )}

@@ -1,9 +1,9 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ocr, resolvePersonInput, searchUsers, getMe, createReceipt as apiCreateReceipt, listGroups } from '../lib/api';
+import { ocr, resolvePersonInput, searchUsers, getMe, createReceipt as apiCreateReceipt, updateReceiptFull, listGroups } from '../lib/api';
 import type { GroupSummary } from '@split-it/types';
 import { useContactsStore } from '../store/contacts';
-import type { OcrLineItem, User } from '@split-it/types';
+import type { OcrLineItem, User, ReceiptWithDetails } from '@split-it/types';
 
 function fmtPrice(n: number): string {
   return (n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -147,10 +147,11 @@ export default function NewReceipt() {
   const libraryRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<'capture' | 'edit' | 'assign' | 'summary'>('capture');
+  const [editReceiptId, setEditReceiptId] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrError, setOcrError] = useState('');
-  const [meta, setMeta] = useState<{ restaurant_name: string | null; date: string | null; tax: number | null; tip: number | null; total: number | null }>({
-    restaurant_name: null, date: null, tax: null, tip: null, total: null,
+  const [meta, setMeta] = useState<{ restaurant_name: string | null; date: string | null; subtotal: number | null; tax: number | null; tip: number | null; total: number | null }>({
+    restaurant_name: null, date: null, subtotal: null, tax: null, tip: null, total: null,
   });
   const [items, setItems] = useState<EditableItem[]>([]);
   const [saving, setSaving] = useState(false);
@@ -166,17 +167,48 @@ export default function NewReceipt() {
   const [me, setMe] = useState<User | null>(null);
 
   useEffect(() => {
-    getMe().then(({ user }) => { setMe(user); setPeople([user]); }).catch(() => {});
+    getMe().then(({ user }) => {
+      setMe(user);
+      const state = location.state as { editReceipt?: ReceiptWithDetails } | null;
+      if (state?.editReceipt) {
+        const allUsers = new Map<string, User>();
+        allUsers.set(user.id, user);
+        for (const li of state.editReceipt.line_items) {
+          for (const a of li.assignments) {
+            if (a.user && !allUsers.has(a.user.id)) allUsers.set(a.user.id, a.user as User);
+          }
+        }
+        setPeople(Array.from(allUsers.values()));
+      } else {
+        setPeople([user]);
+      }
+    }).catch(() => {});
     listGroups().then(({ groups: g }) => setGroups(g)).catch(() => {});
   }, []);
 
   useEffect(() => {
-    const state = location.state as { file?: File; manual?: boolean } | null;
+    const state = location.state as { file?: File; manual?: boolean; editReceipt?: ReceiptWithDetails } | null;
     if (state?.file) {
       handleImageFile(state.file);
     } else if (state?.manual) {
-      setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), tax: null, tip: null, total: null });
+      setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), subtotal: null, tax: null, tip: null, total: null });
       setItems([{ id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
+      setStep('edit');
+    } else if (state?.editReceipt) {
+      const r = state.editReceipt;
+      setEditReceiptId(r.id);
+      setMeta({ restaurant_name: r.restaurant_name, date: r.date, subtotal: r.subtotal ?? null, tax: r.tax, tip: r.tip, total: r.total });
+      setItems(r.line_items.map((li) => ({
+        id: li.id,
+        description: li.description,
+        quantity: li.quantity,
+        unit_price: li.unit_price,
+        total_price: li.total_price,
+        assignments: li.assignments
+          .filter((a) => a.user)
+          .map((a) => ({ user: a.user as User, fraction: a.fraction })),
+      })));
+      setSelectedGroupId(r.group_id ?? null);
       setStep('edit');
     }
   }, []);
@@ -188,7 +220,7 @@ export default function NewReceipt() {
       const imageBase64 = await toBase64(file);
       const mimeType = (file.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
       const result = await ocr({ imageBase64, mimeType });
-      setMeta({ restaurant_name: result.restaurant_name, date: result.date ?? null, tax: result.tax, tip: result.tip, total: result.total });
+      setMeta({ restaurant_name: result.restaurant_name, date: result.date ?? null, subtotal: result.subtotal ?? null, tax: result.tax, tip: result.tip, total: result.total });
       setItems((result.line_items ?? []).map((li) => ({
         ...li,
         unit_price: li.unit_price ?? 0,
@@ -270,7 +302,8 @@ export default function NewReceipt() {
   async function save() {
     setSaving(true);
     try {
-      const subtotal = items.reduce((s, i) => s + i.total_price, 0);
+      const computedSubtotal = items.reduce((s, i) => s + i.total_price, 0);
+      const subtotal = meta.subtotal ?? computedSubtotal;
       const payload = {
         restaurant_name: meta.restaurant_name,
         date: meta.date ?? undefined,
@@ -288,8 +321,13 @@ export default function NewReceipt() {
         })),
         group_id: selectedGroupId ?? undefined,
       };
-      const { receipt } = await apiCreateReceipt(payload);
-      navigate(`/receipts/${receipt.id}`, { replace: true });
+      if (editReceiptId) {
+        await updateReceiptFull(editReceiptId, payload);
+        navigate(`/receipts/${editReceiptId}`, { replace: true });
+      } else {
+        const { receipt } = await apiCreateReceipt(payload);
+        navigate(`/receipts/${receipt.id}`, { replace: true });
+      }
     } finally {
       setSaving(false);
     }
@@ -299,7 +337,7 @@ export default function NewReceipt() {
     <div className="min-h-screen bg-gray-50 pb-24">
       <div className="sticky top-0 z-10 bg-white border-b border-gray-100 px-4 py-4 flex items-center gap-3">
         <button onClick={() => navigate(-1)} className="text-gray-500 text-sm">← Back</button>
-        <h1 className="font-semibold">New Receipt</h1>
+        <h1 className="font-semibold">{editReceiptId ? 'Edit Receipt' : 'New Receipt'}</h1>
       </div>
 
       {/* Step: Capture */}
@@ -349,7 +387,7 @@ export default function NewReceipt() {
               </div>
               <button
                 onClick={() => {
-                  setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), tax: null, tip: null, total: null });
+                  setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), subtotal: null, tax: null, tip: null, total: null });
                   setItems([{ id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
                   setStep('edit');
                 }}
@@ -367,32 +405,33 @@ export default function NewReceipt() {
       {step === 'edit' && (
         <div className="px-4 pt-4 space-y-4">
           <div className="card space-y-3">
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Restaurant</label>
-                <input
-                  className="input mt-1"
-                  value={meta.restaurant_name ?? ''}
-                  onChange={(e) => setMeta({ ...meta, restaurant_name: e.target.value || null })}
-                  placeholder="Restaurant name"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Date</label>
-                <input
-                  className="input mt-1"
-                  type="date"
-                  value={meta.date ?? ''}
-                  onChange={(e) => setMeta({ ...meta, date: e.target.value || null })}
-                />
-              </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Restaurant</label>
+              <input
+                className="input mt-1"
+                value={meta.restaurant_name ?? ''}
+                onChange={(e) => setMeta({ ...meta, restaurant_name: e.target.value || null })}
+                placeholder="Restaurant name"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide">Date</label>
+              <input
+                className="input mt-1"
+                style={{ width: '11rem', minWidth: 0 }}
+                type="date"
+                value={meta.date ?? ''}
+                onChange={(e) => setMeta({ ...meta, date: e.target.value || null })}
+              />
             </div>
             <div className="flex gap-3">
               <div className="flex-1">
                 <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Subtotal</label>
-                <div className="input mt-1 bg-gray-50 text-gray-500">
-                  ${fmtPrice(items.reduce((s, i) => s + i.total_price, 0))}
-                </div>
+                <PriceInput
+                  className="input mt-1"
+                  value={meta.subtotal ?? items.reduce((s, i) => s + i.total_price, 0)}
+                  onChange={(v) => setMeta({ ...meta, subtotal: v || null })}
+                />
               </div>
               <div className="flex-1">
                 <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tax</label>

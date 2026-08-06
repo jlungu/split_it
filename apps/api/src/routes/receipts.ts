@@ -37,12 +37,15 @@ router.get('/', async (c) => {
   if (assignedIds.length > 0) {
     const { data, error } = await supabase
       .from('receipts')
-      .select('id, owner_id, restaurant_name, date, subtotal, tax, tip, total, created_at')
+      .select('id, owner_id, restaurant_name, date, subtotal, tax, tip, total, created_at, owner:users!owner_id(display_name, email)')
       .in('id', assignedIds)
       .neq('owner_id', userId)
       .order('created_at', { ascending: false });
     if (error) return c.json({ error: error.message }, 500);
-    assigned = (data as Receipt[]) ?? [];
+    assigned = (data ?? []).map((r: any) => {
+      const { owner, ...rest } = r;
+      return { ...rest, owner_name: owner?.display_name ?? owner?.email ?? null } as Receipt;
+    });
   }
 
   const all = [...((owned as Receipt[]) ?? []), ...assigned].sort(
@@ -177,6 +180,74 @@ router.get('/:id', async (c) => {
   };
 
   return c.json({ receipt: result });
+});
+
+// Full replace: update metadata + delete and re-insert all line items and assignments
+router.put('/:id/full', async (c) => {
+  const userId = await requireAuth(c);
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401);
+
+  const receiptId = c.req.param('id');
+  const body = await c.req.json<{
+    restaurant_name?: string | null;
+    date?: string;
+    subtotal?: number;
+    tax?: number | null;
+    tip?: number | null;
+    total?: number | null;
+    group_id?: string | null;
+    line_items: Array<{
+      description: string;
+      unit_price: number;
+      quantity: number;
+      total_price: number;
+      position: number;
+      assignments: Array<{ user_id: string; fraction: number }>;
+    }>;
+  }>();
+
+  const { error: ue } = await supabase
+    .from('receipts')
+    .update({
+      restaurant_name: body.restaurant_name ?? null,
+      date: body.date ?? new Date().toISOString().slice(0, 10),
+      subtotal: body.subtotal ?? null,
+      tax: body.tax ?? null,
+      tip: body.tip ?? null,
+      total: body.total ?? null,
+      group_id: body.group_id ?? null,
+    })
+    .eq('id', receiptId)
+    .eq('owner_id', userId);
+
+  if (ue) return c.json({ error: ue.message }, 500);
+
+  // Delete all existing line items (assignments cascade via FK)
+  const { error: de } = await supabase.from('line_items').delete().eq('receipt_id', receiptId);
+  if (de) return c.json({ error: de.message }, 500);
+
+  // Re-insert line items and assignments
+  for (const item of body.line_items ?? []) {
+    const { data: li, error: lie } = await supabase
+      .from('line_items')
+      .insert({ receipt_id: receiptId, description: item.description, unit_price: item.unit_price, quantity: item.quantity, total_price: item.total_price, position: item.position })
+      .select()
+      .single();
+    if (lie) return c.json({ error: lie.message }, 500);
+
+    if (item.assignments?.length) {
+      const rows = item.assignments.map((a) => ({
+        line_item_id: li.id,
+        user_id: a.user_id,
+        fraction: a.fraction,
+        computed_amount: Number((a.fraction * item.total_price).toFixed(2)),
+      }));
+      const { error: ae } = await supabase.from('assignments').insert(rows);
+      if (ae) return c.json({ error: ae.message }, 500);
+    }
+  }
+
+  return c.json({ ok: true });
 });
 
 // Update receipt metadata (restaurant name, date, tax, tip, total)
