@@ -3,7 +3,13 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ocr, resolvePersonInput, searchUsers, getMe, createReceipt as apiCreateReceipt, updateReceiptFull, listGroups } from '../lib/api';
 import type { GroupSummary } from '@split-it/types';
 import { useContactsStore } from '../store/contacts';
+import { prepareReceiptImage } from '../lib/deskew';
 import type { OcrLineItem, User, ReceiptWithDetails } from '@split-it/types';
+
+// Today's date in the user's timezone (toISOString() is UTC, which is already tomorrow on US evenings)
+function localToday() {
+  return new Date().toLocaleDateString('en-CA'); // en-CA formats as YYYY-MM-DD
+}
 
 function fmtPrice(n: number): string {
   return (n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -108,6 +114,7 @@ function evalExpr(raw: string): number {
 function PriceInput({ value, className, onChange }: { value: number; className?: string; onChange: (v: number) => void }) {
   const [text, setText] = useState(fmtPrice(value ?? 0));
   useEffect(() => { setText(fmtPrice(value ?? 0)); }, [value]);
+  const justFocused = useRef(false);
   return (
     <div className="relative">
       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">$</span>
@@ -116,8 +123,23 @@ function PriceInput({ value, className, onChange }: { value: number; className?:
         type="text"
         inputMode="decimal"
         value={text}
+        onFocus={(e) => {
+          // Highlight the whole value on entry (typing replaces it; → puts the cursor at the end).
+          // Deferred so the tap that focused the field doesn't collapse the selection on iOS.
+          const el = e.currentTarget;
+          justFocused.current = true;
+          setTimeout(() => el.setSelectionRange(0, el.value.length, 'forward'), 0);
+        }}
+        onMouseUp={(e) => {
+          // Safari clears the selection on the mouseup of the focusing click
+          if (justFocused.current) { e.preventDefault(); justFocused.current = false; }
+        }}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
+          justFocused.current = false;
+          // Only commit real edits — writing back the displayed (rounded) value would
+          // replace an exact amount like 6.6667 with 6.67, or pin an auto-computed subtotal
+          if (text === fmtPrice(value ?? 0)) return;
           const parsed = evalExpr(text);
           onChange(parsed);
           setText(fmtPrice(parsed));
@@ -127,9 +149,16 @@ function PriceInput({ value, className, onChange }: { value: number; className?:
   );
 }
 
-type EditableItem = OcrLineItem & { id: string; assignments: { user: User; fraction: number }[] };
+// quantity is null while the field is cleared mid-edit; it's saved as 1 if left blank
+type EditableItem = Omit<OcrLineItem, 'quantity'> & { id: string; quantity: number | null; assignments: { user: User; fraction: number }[] };
 
 function newId() { return Math.random().toString(36).slice(2); }
+
+// Unit price kept exact (total ÷ qty) so changing the quantity scales the total without drift:
+// "3 for $20.00" displays a $6.67 unit price, but 3 × 6.67 would be $20.01
+function exactUnit(total: number, qty: number | null, fallback: number) {
+  return qty && qty > 0 ? total / qty : fallback;
+}
 
 function toBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -155,6 +184,10 @@ export default function NewReceipt() {
   });
   const [items, setItems] = useState<EditableItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  // Synchronous guard: repeated taps can land before the disabled state re-renders, and two
+  // concurrent saves of the same receipt interleave their delete + re-insert of line items
+  const savingRef = useRef(false);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
@@ -191,7 +224,7 @@ export default function NewReceipt() {
     if (state?.file) {
       handleImageFile(state.file);
     } else if (state?.manual) {
-      setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), subtotal: null, tax: null, tip: null, total: null });
+      setMeta({ restaurant_name: null, date: localToday(), subtotal: null, tax: null, tip: null, total: null });
       setItems([{ id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
       setStep('edit');
     } else if (state?.editReceipt) {
@@ -202,7 +235,7 @@ export default function NewReceipt() {
         id: li.id,
         description: li.description,
         quantity: li.quantity,
-        unit_price: li.unit_price,
+        unit_price: exactUnit(li.total_price, li.quantity, li.unit_price),
         total_price: li.total_price,
         assignments: li.assignments
           .filter((a) => a.user)
@@ -217,13 +250,20 @@ export default function NewReceipt() {
     setOcrError('');
     setOcrLoading(true);
     try {
-      const imageBase64 = await toBase64(file);
-      const mimeType = (file.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+      // Straighten + downsize before OCR; fall back to the original photo if that fails
+      let imageBase64: string;
+      let mimeType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+      try {
+        ({ base64: imageBase64, mimeType } = await prepareReceiptImage(file));
+      } catch {
+        imageBase64 = await toBase64(file);
+        mimeType = (file.type || 'image/jpeg') as typeof mimeType;
+      }
       const result = await ocr({ imageBase64, mimeType });
       setMeta({ restaurant_name: result.restaurant_name, date: result.date ?? null, subtotal: result.subtotal ?? null, tax: result.tax, tip: result.tip, total: result.total });
       setItems((result.line_items ?? []).map((li) => ({
         ...li,
-        unit_price: li.unit_price ?? 0,
+        unit_price: exactUnit(li.total_price ?? 0, li.quantity ?? 1, li.unit_price ?? 0),
         total_price: li.total_price ?? 0,
         quantity: li.quantity ?? 1,
         id: newId(),
@@ -247,6 +287,22 @@ export default function NewReceipt() {
 
   function removeItem(id: string) {
     setItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  // Expand a multi-quantity line ("3 Beer $18") into one line per unit so each can be
+  // assigned to a different person. Leftover cents go to the first units so the total is unchanged.
+  function splitIntoUnits(id: string) {
+    setItems((prev) => prev.flatMap((item) => {
+      if (item.id !== id || item.quantity === null || item.quantity < 2 || !Number.isInteger(item.quantity)) return [item];
+      const n = item.quantity;
+      const cents = Math.round(item.total_price * 100);
+      const base = Math.floor(cents / n);
+      const extra = cents - base * n;
+      return Array.from({ length: n }, (_, i) => {
+        const price = (base + (i < extra ? 1 : 0)) / 100;
+        return { ...item, id: newId(), quantity: 1, unit_price: price, total_price: price };
+      });
+    }));
   }
 
   useEffect(() => {
@@ -300,7 +356,10 @@ export default function NewReceipt() {
   }
 
   async function save() {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
+    setSaveError('');
     try {
       const computedSubtotal = items.reduce((s, i) => s + i.total_price, 0);
       const subtotal = meta.subtotal ?? computedSubtotal;
@@ -313,8 +372,8 @@ export default function NewReceipt() {
         subtotal,
         line_items: items.map((item, idx) => ({
           description: item.description,
-          unit_price: item.unit_price,
-          quantity: item.quantity,
+          unit_price: +item.unit_price.toFixed(2),
+          quantity: item.quantity ?? 1,
           total_price: item.total_price,
           position: idx,
           assignments: item.assignments.map((a) => ({ user_id: a.user.id, fraction: a.fraction })),
@@ -328,7 +387,10 @@ export default function NewReceipt() {
         const { receipt } = await apiCreateReceipt(payload);
         navigate(`/receipts/${receipt.id}`, { replace: true });
       }
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -387,7 +449,7 @@ export default function NewReceipt() {
               </div>
               <button
                 onClick={() => {
-                  setMeta({ restaurant_name: null, date: new Date().toISOString().slice(0, 10), subtotal: null, tax: null, tip: null, total: null });
+                  setMeta({ restaurant_name: null, date: localToday(), subtotal: null, tax: null, tip: null, total: null });
                   setItems([{ id: newId(), description: '', quantity: 1, unit_price: 0, total_price: 0, assignments: [] }]);
                   setStep('edit');
                 }}
@@ -478,8 +540,10 @@ export default function NewReceipt() {
                       className="input"
                       type="number"
                       min="1"
-                      value={item.quantity}
+                      value={item.quantity ?? ''}
                       onChange={(e) => {
+                        // Allow clearing the field; keep the current total until a new quantity is typed
+                        if (e.target.value === '') { updateItem(item.id, { quantity: null }); return; }
                         const q = +e.target.value;
                         updateItem(item.id, { quantity: q, total_price: +(q * item.unit_price).toFixed(2) });
                       }}
@@ -490,7 +554,7 @@ export default function NewReceipt() {
                     <PriceInput
                       className="input"
                       value={item.unit_price}
-                      onChange={(up) => updateItem(item.id, { unit_price: up, total_price: +(item.quantity * up).toFixed(2) })}
+                      onChange={(up) => updateItem(item.id, { unit_price: up, total_price: +((item.quantity ?? 1) * up).toFixed(2) })}
                     />
                   </div>
                   <div className="flex-1">
@@ -498,7 +562,7 @@ export default function NewReceipt() {
                     <PriceInput
                       className="input"
                       value={item.total_price}
-                      onChange={(tp) => updateItem(item.id, { total_price: tp })}
+                      onChange={(tp) => updateItem(item.id, { total_price: tp, unit_price: exactUnit(tp, item.quantity, item.unit_price) })}
                     />
                   </div>
                 </div>
@@ -507,7 +571,40 @@ export default function NewReceipt() {
           ))}
 
           <button onClick={addItem} className="btn-secondary">+ Add item</button>
-          <button onClick={() => setStep('assign')} className="btn-primary">Next: Assign people →</button>
+          {(() => {
+            const blank = items.filter((i) => i.quantity === null).length;
+            return blank > 0 && (
+              <p className="text-xs text-amber-600 text-center">
+                {blank === 1 ? '1 item has' : `${blank} items have`} no quantity — {blank === 1 ? 'it' : 'they'}'ll be saved as 1
+              </p>
+            );
+          })()}
+          {(() => {
+            // Compare in cents to avoid float noise; a blank subtotal already defaults to the items' sum
+            const itemsCents = items.reduce((s, i) => s + Math.round(i.total_price * 100), 0);
+            const mismatch = meta.subtotal !== null && Math.round(meta.subtotal * 100) !== itemsCents;
+            return (
+              <>
+                {mismatch && (
+                  <div className="text-xs text-amber-600 text-center space-y-1">
+                    <p>
+                      Items add up to ${fmtPrice(itemsCents / 100)} but the subtotal is ${fmtPrice(meta.subtotal!)}
+                      {' '}(off by ${fmtPrice(Math.abs(itemsCents / 100 - meta.subtotal!))}). Check for a missing or misread item.
+                    </p>
+                    <button
+                      onClick={() => setMeta({ ...meta, subtotal: itemsCents / 100 })}
+                      className="font-medium text-brand-600"
+                    >
+                      Use ${fmtPrice(itemsCents / 100)} as subtotal
+                    </button>
+                  </div>
+                )}
+                <button onClick={() => setStep('assign')} disabled={mismatch} className="btn-primary">
+                  Next: Assign people →
+                </button>
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -599,9 +696,20 @@ export default function NewReceipt() {
           {items.map((item) => (
             <div key={item.id} className="card">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium">{item.description || '(no name)'}</span>
+                <span className="text-sm font-medium">
+                  {(item.quantity ?? 1) > 1 && <span className="text-gray-400">{item.quantity}× </span>}
+                  {item.description || '(no name)'}
+                </span>
                 <span className="text-sm text-gray-500">${item.total_price.toFixed(2)}</span>
               </div>
+              {item.quantity !== null && item.quantity > 1 && Number.isInteger(item.quantity) && (
+                <button
+                  onClick={() => splitIntoUnits(item.id)}
+                  className="text-xs font-medium text-brand-600 mb-2"
+                >
+                  Split into {item.quantity} separate items
+                </button>
+              )}
               <div className="flex flex-wrap gap-2">
                 {people.length > 1 && (() => {
                   const allAssigned = people.every((p) => item.assignments.some((a) => a.user.id === p.id));
@@ -658,6 +766,7 @@ export default function NewReceipt() {
               <>
                 {unassigned.length > 0 && <p className="text-xs text-amber-600 text-center">Not assigned: {unassigned.map((p) => me?.id === p.id ? 'Me' : (p.display_name ?? p.email.split('@')[0])).join(', ')}</p>}
                 <button onClick={() => setStep('edit')} className="btn-secondary">← Back</button>
+                {saveError && <p className="text-xs text-red-600 text-center">Couldn't save: {saveError}</p>}
                 <button onClick={save} disabled={saving || unassigned.length > 0} className="btn-primary">{saving ? 'Saving…' : 'Save receipt'}</button>
               </>
             );

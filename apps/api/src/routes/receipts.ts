@@ -5,6 +5,48 @@ import { supabase } from '../lib/supabase.js';
 
 const router = new Hono();
 
+type LineItemInput = {
+  description: string;
+  unit_price: number;
+  quantity: number;
+  total_price: number;
+  position: number;
+  assignments: Array<{ user_id: string; fraction: number }>;
+};
+
+// Insert all line items in one request, then all assignments in one more. Doing it per item
+// meant ~2 sequential round trips per line, which made large receipts slow enough to time out.
+async function insertLineItems(receiptId: string, items: LineItemInput[]): Promise<string | null> {
+  if (!items.length) return null;
+  const { data: rows, error: lie } = await supabase
+    .from('line_items')
+    .insert(items.map((item) => ({
+      receipt_id: receiptId,
+      description: item.description,
+      unit_price: item.unit_price,
+      quantity: item.quantity,
+      total_price: item.total_price,
+      position: item.position,
+    })))
+    .select('id, position');
+  if (lie) return lie.message;
+
+  // Match returned rows back to their input by position (unique within a receipt)
+  const idByPosition = new Map((rows ?? []).map((r) => [r.position, r.id]));
+  const assignmentRows = items.flatMap((item) =>
+    (item.assignments ?? []).map((a) => ({
+      line_item_id: idByPosition.get(item.position),
+      user_id: a.user_id,
+      fraction: a.fraction,
+      computed_amount: Number((a.fraction * item.total_price).toFixed(2)),
+    }))
+  );
+  if (!assignmentRows.length) return null;
+  const { error: ae } = await supabase.from('assignments').insert(assignmentRows);
+  return ae?.message ?? null;
+}
+
+
 // List receipts where the user is owner or assignee
 router.get('/', async (c) => {
   const userId = await requireAuth(c);
@@ -67,14 +109,7 @@ router.post('/', async (c) => {
     tax?: number;
     tip?: number;
     total?: number;
-    line_items: Array<{
-      description: string;
-      unit_price: number;
-      quantity: number;
-      total_price: number;
-      position: number;
-      assignments: Array<{ user_id: string; fraction: number }>;
-    }>;
+    line_items: LineItemInput[];
   }>();
 
   // Insert receipt
@@ -95,34 +130,11 @@ router.post('/', async (c) => {
 
   if (re) return c.json({ error: re.message }, 500);
 
-  // Insert line items
-  for (const item of body.line_items ?? []) {
-    const { data: li, error: lie } = await supabase
-      .from('line_items')
-      .insert({
-        receipt_id: receipt.id,
-        description: item.description,
-        unit_price: item.unit_price,
-        quantity: item.quantity,
-        total_price: item.total_price,
-        position: item.position,
-      })
-      .select()
-      .single();
-
-    if (lie) return c.json({ error: lie.message }, 500);
-
-    // Insert assignments for this line item
-    if (item.assignments?.length) {
-      const rows = item.assignments.map((a) => ({
-        line_item_id: li.id,
-        user_id: a.user_id,
-        fraction: a.fraction,
-        computed_amount: Number((a.fraction * item.total_price).toFixed(2)),
-      }));
-      const { error: ae } = await supabase.from('assignments').insert(rows);
-      if (ae) return c.json({ error: ae.message }, 500);
-    }
+  const itemsError = await insertLineItems(receipt.id, body.line_items ?? []);
+  if (itemsError) {
+    // Don't leave a half-saved receipt behind (line items cascade)
+    await supabase.from('receipts').delete().eq('id', receipt.id);
+    return c.json({ error: itemsError }, 500);
   }
 
   return c.json({ receipt: receipt as Receipt }, 201);
@@ -196,17 +208,10 @@ router.put('/:id/full', async (c) => {
     tip?: number | null;
     total?: number | null;
     group_id?: string | null;
-    line_items: Array<{
-      description: string;
-      unit_price: number;
-      quantity: number;
-      total_price: number;
-      position: number;
-      assignments: Array<{ user_id: string; fraction: number }>;
-    }>;
+    line_items: LineItemInput[];
   }>();
 
-  const { error: ue } = await supabase
+  const { data: updated, error: ue } = await supabase
     .from('receipts')
     .update({
       restaurant_name: body.restaurant_name ?? null,
@@ -218,34 +223,20 @@ router.put('/:id/full', async (c) => {
       group_id: body.group_id ?? null,
     })
     .eq('id', receiptId)
-    .eq('owner_id', userId);
+    .eq('owner_id', userId)
+    .select('id');
 
   if (ue) return c.json({ error: ue.message }, 500);
+  // No row updated means it isn't this user's receipt — stop before touching its line items
+  if (!updated?.length) return c.json({ error: 'Receipt not found' }, 404);
 
   // Delete all existing line items (assignments cascade via FK)
   const { error: de } = await supabase.from('line_items').delete().eq('receipt_id', receiptId);
   if (de) return c.json({ error: de.message }, 500);
 
   // Re-insert line items and assignments
-  for (const item of body.line_items ?? []) {
-    const { data: li, error: lie } = await supabase
-      .from('line_items')
-      .insert({ receipt_id: receiptId, description: item.description, unit_price: item.unit_price, quantity: item.quantity, total_price: item.total_price, position: item.position })
-      .select()
-      .single();
-    if (lie) return c.json({ error: lie.message }, 500);
-
-    if (item.assignments?.length) {
-      const rows = item.assignments.map((a) => ({
-        line_item_id: li.id,
-        user_id: a.user_id,
-        fraction: a.fraction,
-        computed_amount: Number((a.fraction * item.total_price).toFixed(2)),
-      }));
-      const { error: ae } = await supabase.from('assignments').insert(rows);
-      if (ae) return c.json({ error: ae.message }, 500);
-    }
-  }
+  const itemsError = await insertLineItems(receiptId, body.line_items ?? []);
+  if (itemsError) return c.json({ error: itemsError }, 500);
 
   return c.json({ ok: true });
 });

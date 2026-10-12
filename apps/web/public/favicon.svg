@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Simplified version of the app icon (icons/icon-512.png), legible at tab size -->
+  <rect width="32" height="32" rx="7" fill="#FBF8EA"/>
+  <!-- Receipt with torn zigzag top and bottom edges -->
+  <path d="M7 5.5 L8.5 4 L10 5.5 L11.5 4 L13 5.5 L14.5 4 L16 5.5 L17.5 4 L19 5.5 L20.5 4 L22 5.5 L23.5 4 L25 5.5
+           V26.5 L23.5 28 L22 26.5 L20.5 28 L19 26.5 L17.5 28 L16 26.5 L14.5 28 L13 26.5 L11.5 28 L10 26.5 L8.5 28 L7 26.5 Z"
+        fill="#FFFFFF" stroke="#C9C6BC" stroke-width="0.75" stroke-linejoin="round"/>
+  <!-- "RECEIPT" title bar and double rule -->
+  <rect x="9.5" y="8" width="13" height="3" rx="0.6" fill="#1A1A1A"/>
+  <rect x="9.5" y="12.25" width="13" height="0.9" fill="#1A1A1A"/>
+  <!-- Item rows: description left, price right -->
+  <g fill="#1A1A1A">
+    <rect x="9.5" y="15.5" width="7" height="1.6" rx="0.5"/>
+    <rect x="19" y="15.5" width="3.5" height="1.6" rx="0.5"/>
+    <rect x="9.5" y="19" width="5.5" height="1.6" rx="0.5"/>
+    <rect x="19" y="19" width="3.5" height="1.6" rx="0.5"/>
+    <rect x="19" y="22.5" width="3.5" height="1.6" rx="0.5"/>
+  </g>
+</svg>
