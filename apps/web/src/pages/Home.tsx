@@ -18,7 +18,8 @@ function formatZelleContact(contact: string): { display: string; copyText: strin
 }
 
 function formatDate(d: string) {
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  // Parse as local midnight — a bare YYYY-MM-DD is read as UTC and shows the previous day in US timezones
+  return new Date(`${d.slice(0, 10)}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 interface BreakdownSheet {

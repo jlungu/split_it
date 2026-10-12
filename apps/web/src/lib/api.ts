@@ -80,7 +80,7 @@ export const getReceipt = (id: string) =>
   apiCache.fetch(`receipt:${id}`, () => request<{ receipt: ReceiptWithDetails }>(`/api/receipts/${id}`));
 
 export const createReceipt = async (body: object) => {
-  const result = await request<{ receipt: Receipt }>('/api/receipts', { method: 'POST', body: JSON.stringify(body) });
+  const result = await request<{ receipt: Receipt }>('/api/receipts', { method: 'POST', body: JSON.stringify(body), timeoutMs: 30_000 });
   apiCache.invalidate('receipts', 'balances', 'groups');
   apiCache.invalidatePrefix('group:');
   return result;
@@ -94,7 +94,7 @@ export const updateReceipt = async (id: string, patch: Partial<Receipt>) => {
 };
 
 export const updateReceiptFull = async (id: string, body: object) => {
-  const result = await request<{ ok: boolean }>(`/api/receipts/${id}/full`, { method: 'PUT', body: JSON.stringify(body) });
+  const result = await request<{ ok: boolean }>(`/api/receipts/${id}/full`, { method: 'PUT', body: JSON.stringify(body), timeoutMs: 30_000 });
   apiCache.invalidate('receipts', `receipt:${id}`, `split:${id}`, 'balances', 'groups');
   apiCache.invalidatePrefix('group:');
   return result;
